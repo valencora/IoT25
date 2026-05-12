@@ -1,0 +1,47 @@
+# Base de datos
+*.db
+*.db-shm
+*.db-wal
+
+# Modelos entrenados
+models/
+*.pkl
+
+# Blacklist y datos sensibles
+ja3_blacklist.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Variables de entorno y configuración local
+.env
+*.env
+config.local.py
+
+# Logs
+*.log
+logs/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Uvicorn / FastAPI
+.pytest_cache/
+
+# Jupyter (por si usás notebooks para análisis)
+.ipynb_checkpoints/
+*.ipynb

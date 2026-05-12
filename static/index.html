@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IoT25 — Monitor de Red</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+    }
+
+    header {
+      background: #1a1d2e;
+      border-bottom: 1px solid #2d3148;
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    header h1 { font-size: 1.25rem; font-weight: 600; color: #a78bfa; }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    #refresh-info {
+      font-size: 0.8rem;
+      color: #64748b;
+    }
+
+    #alerts-btn {
+      position: relative;
+      background: #2d3148;
+      border: 1px solid #3d4258;
+      color: #e2e8f0;
+      padding: 0.5rem 0.85rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.875rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: background 0.15s;
+    }
+    #alerts-btn:hover { background: #3d4258; }
+
+    #alerts-count {
+      background: #f87171;
+      color: #1a1d2e;
+      font-weight: 700;
+      font-size: 0.7rem;
+      padding: 0.1rem 0.45rem;
+      border-radius: 999px;
+      min-width: 1.25rem;
+      text-align: center;
+    }
+    #alerts-count.zero { background: #2d3148; color: #64748b; }
+
+    .alert-item {
+      padding: 0.85rem 0;
+      border-bottom: 1px solid #1e2235;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    .alert-item:last-child { border-bottom: none; }
+
+    .alert-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+    .alert-meta { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+    .alert-msg { color: #e2e8f0; font-size: 0.875rem; }
+    .alert-time { color: #64748b; font-size: 0.75rem; }
+
+    .severity {
+      display: inline-block;
+      padding: 0.15rem 0.55rem;
+      border-radius: 999px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .severity.critical { background: #450a0a; color: #fca5a5; }
+    .severity.high     { background: #5a1a08; color: #fdba74; }
+    .severity.medium   { background: #422006; color: #fbbf24; }
+    .severity.low      { background: #1e293b; color: #94a3b8; }
+
+    .ack-btn {
+      background: #1e3a8a;
+      border: none;
+      color: #bfdbfe;
+      padding: 0.35rem 0.75rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s;
+    }
+    .ack-btn:hover { background: #2563eb; color: #fff; }
+    .ack-btn:disabled { opacity: 0.5; cursor: default; }
+
+    .tabs {
+      display: flex;
+      gap: 0.25rem;
+      border-bottom: 1px solid #2d3148;
+      margin-bottom: 0.5rem;
+    }
+    .tab {
+      background: none;
+      border: none;
+      color: #64748b;
+      padding: 0.6rem 1rem;
+      font-size: 0.85rem;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .tab:hover { color: #cbd5e1; }
+    .tab.active {
+      color: #a78bfa;
+      border-bottom-color: #a78bfa;
+    }
+
+    .alert-item.acked { opacity: 0.65; }
+    .alert-item.acked .alert-msg { color: #94a3b8; }
+
+    main { padding: 2rem; max-width: 1200px; margin: 0 auto; }
+
+    /* ── Stats ── */
+    #stats {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .stat-card {
+      background: #1a1d2e;
+      border: 1px solid #2d3148;
+      border-radius: 8px;
+      padding: 1rem 1.5rem;
+      flex: 1;
+    }
+
+    .stat-card .label { font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: .05em; }
+    .stat-card .value { font-size: 2rem; font-weight: 700; margin-top: 0.25rem; }
+    .stat-card.total  .value { color: #a78bfa; }
+    .stat-card.active .value { color: #34d399; }
+    .stat-card.offline .value { color: #f87171; }
+
+    /* ── Table ── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #1a1d2e;
+      border: 1px solid #2d3148;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    thead { background: #12152a; }
+    th {
+      padding: 0.75rem 1rem;
+      text-align: left;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: #64748b;
+      border-bottom: 1px solid #2d3148;
+    }
+
+    tbody tr {
+      border-bottom: 1px solid #1e2235;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: #20243a; }
+
+    td { padding: 0.75rem 1rem; font-size: 0.875rem; }
+
+    .badge {
+      display: inline-block;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .badge.active  { background: #064e3b; color: #34d399; }
+    .badge.offline { background: #450a0a; color: #f87171; }
+
+    .mac { font-family: monospace; color: #94a3b8; }
+    .ip  { font-family: monospace; }
+
+    /* ── Modal ── */
+    #overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 10;
+      align-items: center;
+      justify-content: center;
+    }
+    #overlay.open { display: flex; }
+
+    #modal {
+      background: #1a1d2e;
+      border: 1px solid #2d3148;
+      border-radius: 12px;
+      width: 90%;
+      max-width: 700px;
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #modal-header {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid #2d3148;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    #modal-title { font-weight: 600; color: #a78bfa; }
+    #modal-close {
+      background: none;
+      border: none;
+      color: #64748b;
+      font-size: 1.25rem;
+      cursor: pointer;
+      line-height: 1;
+    }
+    #modal-close:hover { color: #e2e8f0; }
+
+    #modal-body { overflow-y: auto; padding: 1rem 1.25rem; }
+
+    .event {
+      display: flex;
+      gap: 1rem;
+      padding: 0.6rem 0;
+      border-bottom: 1px solid #1e2235;
+      font-size: 0.8rem;
+    }
+    .event:last-child { border-bottom: none; }
+
+    .event-time { color: #64748b; white-space: nowrap; min-width: 150px; }
+    .event-type {
+      font-weight: 600;
+      min-width: 140px;
+    }
+    .event-type.device_discovered { color: #60a5fa; }
+    .event-type.ip_changed        { color: #fbbf24; }
+    .event-type.went_offline      { color: #f87171; }
+    .event-type.came_online       { color: #34d399; }
+
+    .event-detail { color: #94a3b8; }
+
+    #empty { text-align: center; padding: 3rem; color: #475569; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>IoT25 — Monitor de Red</h1>
+  <div class="header-right">
+    <button id="alerts-btn" type="button" title="Ver alertas activas">
+      🔔 Alertas <span id="alerts-count" class="zero">0</span>
+    </button>
+    <span id="refresh-info">Actualizando cada 30s…</span>
+  </div>
+</header>
+
+<main>
+  <div id="stats">
+    <div class="stat-card total">
+      <div class="label">Total dispositivos</div>
+      <div class="value" id="count-total">—</div>
+    </div>
+    <div class="stat-card active">
+      <div class="label">Activos</div>
+      <div class="value" id="count-active">—</div>
+    </div>
+    <div class="stat-card offline">
+      <div class="label">Offline</div>
+      <div class="value" id="count-offline">—</div>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>MAC</th>
+        <th>IP</th>
+        <th>Hostname</th>
+        <th>Vendor</th>
+        <th>Tipo</th>
+        <th>Estado</th>
+        <th>Último visto</th>
+      </tr>
+    </thead>
+    <tbody id="devices-body">
+      <tr><td colspan="7" id="empty">Cargando…</td></tr>
+    </tbody>
+  </table>
+</main>
+
+<!-- Modal historial -->
+<div id="overlay">
+  <div id="modal">
+    <div id="modal-header">
+      <span id="modal-title">Historial</span>
+      <button id="modal-close">✕</button>
+    </div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+  const EVENT_LABELS = {
+    device_discovered: 'Descubierto',
+    ip_changed:        'IP cambiada',
+    went_offline:      'Fue offline',
+    came_online:       'Volvió online',
+  };
+
+  function fmtDate(iso) {
+    return new Date(iso).toLocaleString('es-AR');
+  }
+
+  async function loadDevices() {
+    const res = await fetch('/api/devices');
+    const devices = await res.json();
+
+    document.getElementById('count-total').textContent   = devices.length;
+    document.getElementById('count-active').textContent  = devices.filter(d => d.status === 'active').length;
+    document.getElementById('count-offline').textContent = devices.filter(d => d.status === 'offline').length;
+
+    const tbody = document.getElementById('devices-body');
+
+    if (devices.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" id="empty">Sin dispositivos detectados aún.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = devices.map(d => `
+      <tr data-mac="${d.mac}" data-id="${d.id}">
+        <td class="mac">${d.mac}</td>
+        <td class="ip">${d.ip ?? '—'}</td>
+        <td>${d.hostname ?? '—'}</td>
+        <td>${d.vendor ?? '—'}</td>
+        <td>${d.device_type ?? '—'}</td>
+        <td><span class="badge ${d.status}">${d.status}</span></td>
+        <td>${fmtDate(d.last_seen)}</td>
+      </tr>
+    `).join('');
+
+    tbody.querySelectorAll('tr[data-mac]').forEach(row => {
+      row.addEventListener('click', () =>
+        openDevice(row.dataset.mac, parseInt(row.dataset.id, 10))
+      );
+    });
+
+    document.getElementById('refresh-info').textContent =
+      'Última actualización: ' + new Date().toLocaleTimeString('es-AR');
+  }
+
+  let _deviceTab = 'events';
+  let _currentDeviceMac = null;
+  let _currentDeviceId = null;
+
+  async function openDevice(mac, deviceId) {
+    _currentDeviceMac = mac;
+    _currentDeviceId = deviceId;
+    document.getElementById('modal-title').textContent = `Dispositivo — ${mac}`;
+    document.getElementById('modal-body').innerHTML = `
+      <div class="tabs">
+        <button class="tab ${_deviceTab === 'events' ? 'active' : ''}" data-tab="events">Eventos</button>
+        <button class="tab ${_deviceTab === 'dns' ? 'active' : ''}" data-tab="dns">DNS</button>
+        <button class="tab ${_deviceTab === 'tls' ? 'active' : ''}" data-tab="tls">TLS</button>
+      </div>
+      <div id="device-content"><p style="color:#64748b;padding:1rem">Cargando…</p></div>
+    `;
+    document.getElementById('overlay').classList.add('open');
+
+    document.querySelectorAll('#modal-body .tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        _deviceTab = btn.dataset.tab;
+        document.querySelectorAll('#modal-body .tab').forEach(t =>
+          t.classList.toggle('active', t.dataset.tab === _deviceTab)
+        );
+        renderDeviceTab();
+      });
+    });
+
+    await renderDeviceTab();
+  }
+
+  async function renderDeviceTab() {
+    const c = document.getElementById('device-content');
+    if (!c) return;
+    if (_deviceTab === 'events') return renderEvents(c);
+    if (_deviceTab === 'dns')    return renderDns(c);
+    if (_deviceTab === 'tls')    return renderTls(c);
+  }
+
+  async function renderEvents(c) {
+    const res = await fetch(`/api/devices/${_currentDeviceMac}/history`);
+    const events = await res.json();
+    if (events.length === 0) {
+      c.innerHTML = '<p style="color:#64748b;padding:1rem">Sin eventos registrados.</p>';
+      return;
+    }
+    c.innerHTML = events.map(e => {
+      const label = EVENT_LABELS[e.event_type] ?? e.event_type;
+      let detail = '';
+      if (e.old_value && e.new_value) detail = `${escapeHtml(e.old_value)} → ${escapeHtml(e.new_value)}`;
+      else if (e.new_value)            detail = escapeHtml(e.new_value);
+      return `
+        <div class="event">
+          <span class="event-time">${fmtDate(e.timestamp)}</span>
+          <span class="event-type ${escapeHtml(e.event_type)}">${escapeHtml(label)}</span>
+          <span class="event-detail">${detail}</span>
+        </div>
+      `;
+    }).join('');
+  }
+
+  async function renderDns(c) {
+    const res = await fetch(`/api/devices/${_currentDeviceId}/dns?limit=100`);
+    const data = await res.json();
+    if (!data.items || data.items.length === 0) {
+      c.innerHTML = '<p style="color:#64748b;padding:1rem">Sin queries DNS registradas.</p>';
+      return;
+    }
+    c.innerHTML =
+      `<p style="color:#64748b;font-size:0.75rem;padding:0.4rem 0">${data.total} queries totales</p>` +
+      data.items.map(d => {
+        const sus = d.is_suspicious === 1 || d.is_suspicious === true;
+        return `
+          <div class="event">
+            <span class="event-time">${fmtDate(d.timestamp)}</span>
+            <span class="event-type" style="color:${sus ? '#f87171' : '#60a5fa'}">${escapeHtml(d.record_type ?? '?')}</span>
+            <span class="event-detail">
+              ${escapeHtml(d.domain)}
+              ${sus ? ' <span class="severity high">sospechoso</span>' : ''}
+            </span>
+          </div>
+        `;
+      }).join('');
+  }
+
+  async function renderTls(c) {
+    const res = await fetch(`/api/devices/${_currentDeviceId}/tls?limit=100`);
+    const data = await res.json();
+    if (!data.items || data.items.length === 0) {
+      c.innerHTML = '<p style="color:#64748b;padding:1rem">Sin fingerprints TLS registrados.</p>';
+      return;
+    }
+    c.innerHTML =
+      `<p style="color:#64748b;font-size:0.75rem;padding:0.4rem 0">${data.total} fingerprints totales</p>` +
+      data.items.map(t => `
+        <div class="event">
+          <span class="event-time">${fmtDate(t.timestamp)}</span>
+          <span class="event-type" style="color:#a78bfa;font-family:monospace" title="${escapeHtml(t.ja3_string ?? '')}">${escapeHtml(t.ja3_hash.substring(0, 12))}…</span>
+          <span class="event-detail" style="font-family:monospace">${escapeHtml(t.dst_ip)}:${t.dst_port}</span>
+        </div>
+      `).join('');
+  }
+
+  document.getElementById('modal-close').addEventListener('click', () =>
+    document.getElementById('overlay').classList.remove('open')
+  );
+  document.getElementById('overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('overlay'))
+      document.getElementById('overlay').classList.remove('open');
+  });
+
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+  }
+
+  async function refreshAlertsCount() {
+    try {
+      const res = await fetch('/api/alerts/active');
+      const alerts = await res.json();
+      const badge = document.getElementById('alerts-count');
+      badge.textContent = alerts.length;
+      badge.classList.toggle('zero', alerts.length === 0);
+    } catch (e) {
+      // ignore — header badge is best-effort
+    }
+  }
+
+  let _alertsTab = 'active';
+
+  async function openAlerts() {
+    document.getElementById('modal-title').textContent = 'Alertas';
+    document.getElementById('modal-body').innerHTML = `
+      <div class="tabs">
+        <button class="tab ${_alertsTab === 'active' ? 'active' : ''}" data-tab="active">Activas</button>
+        <button class="tab ${_alertsTab === 'history' ? 'active' : ''}" data-tab="history">Historial</button>
+      </div>
+      <div id="alerts-list">
+        <p style="color:#64748b;padding:1rem">Cargando…</p>
+      </div>
+    `;
+    document.getElementById('overlay').classList.add('open');
+
+    document.querySelectorAll('#modal-body .tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        _alertsTab = btn.dataset.tab;
+        document.querySelectorAll('#modal-body .tab').forEach(t =>
+          t.classList.toggle('active', t.dataset.tab === _alertsTab)
+        );
+        renderAlerts();
+      });
+    });
+
+    await renderAlerts();
+  }
+
+  async function renderAlerts() {
+    const list = document.getElementById('alerts-list');
+    if (!list) return;
+
+    const url = _alertsTab === 'active'
+      ? '/api/alerts/active'
+      : '/api/alerts?acknowledged=true&limit=200';
+
+    const res = await fetch(url);
+    const alerts = await res.json();
+
+    if (alerts.length === 0) {
+      const msg = _alertsTab === 'active'
+        ? 'No hay alertas activas.'
+        : 'Sin alertas previas.';
+      list.innerHTML = `<p style="color:#64748b;padding:1rem">${msg}</p>`;
+      return;
+    }
+
+    list.innerHTML = alerts.map(a => {
+      const isAcked = a.acknowledged === 1 || a.acknowledged === true;
+      const action = isAcked
+        ? '<span class="alert-time">vista</span>'
+        : `<button class="ack-btn" data-ack="${a.id}">Marcar como vista</button>`;
+      return `
+        <div class="alert-item ${isAcked ? 'acked' : ''}" data-id="${a.id}">
+          <div class="alert-row">
+            <div class="alert-meta">
+              <span class="severity ${escapeHtml(a.severity)}">${escapeHtml(a.severity)}</span>
+              <span class="alert-msg">${escapeHtml(a.message)}</span>
+            </div>
+            ${action}
+          </div>
+          <span class="alert-time">${escapeHtml(a.type)} · ${fmtDate(a.timestamp)}</span>
+        </div>
+      `;
+    }).join('');
+
+    list.querySelectorAll('button[data-ack]').forEach(btn => {
+      btn.addEventListener('click', () => acknowledgeAlert(parseInt(btn.dataset.ack, 10), btn));
+    });
+  }
+
+  async function acknowledgeAlert(id, btn) {
+    btn.disabled = true;
+    btn.textContent = 'Marcando…';
+    const res = await fetch(`/api/alerts/${id}/acknowledge`, { method: 'POST' });
+    if (!res.ok) {
+      btn.disabled = false;
+      btn.textContent = 'Reintentar';
+      return;
+    }
+    await renderAlerts();
+    refreshAlertsCount();
+  }
+
+  document.getElementById('alerts-btn').addEventListener('click', openAlerts);
+
+  loadDevices();
+  refreshAlertsCount();
+  setInterval(loadDevices, 30000);
+  setInterval(refreshAlertsCount, 30000);
+</script>
+</body>
+</html>
