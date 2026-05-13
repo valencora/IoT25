@@ -14,12 +14,20 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+# Disabled on OpenWrt/RPi4: scapy's AsyncSniffer requires promiscuous mode,
+# which OpenWrt's kernel rejects and freezes the boot. Flip to True once the
+# kernel grants CAP_NET_RAW + promisc on the target interface.
+SCAPY_ENABLED = False
+
 from alert_manager import create_alert, get_active_alerts
 from database import DB_PATH, get_db, init_db
 from device_discovery import DeviceDiscovery
-from dns_capture import DnsCapture
-from tls_capture import TlsCapture
-from traffic_capture import TrafficCollector, TrafficSimulator, ScapyCollector
+from traffic_capture import TrafficCollector, TrafficSimulator
+
+if SCAPY_ENABLED:
+    from dns_capture import DnsCapture
+    from tls_capture import TlsCapture
+    from traffic_capture import ScapyCollector
 
 _discovery = DeviceDiscovery(interval=30, offline_threshold=2)
 _collector = TrafficCollector()
@@ -27,9 +35,9 @@ _collector = TrafficCollector()
 _simulator = TrafficSimulator(interval=30) if os.getenv("SIMULATE_TRAFFIC") == "1" else None
 # CAPTURE_INTERFACE=wlo1 → real pcap capture on that NIC (needs sudo / CAP_NET_RAW)
 _capture_iface = os.getenv("CAPTURE_INTERFACE")
-_scapy = ScapyCollector(_capture_iface) if _capture_iface else None
-_dns   = DnsCapture(_capture_iface)    if _capture_iface else None
-_tls   = TlsCapture(_capture_iface)    if _capture_iface else None
+_scapy = ScapyCollector(_capture_iface) if SCAPY_ENABLED and _capture_iface else None
+_dns   = DnsCapture(_capture_iface)    if SCAPY_ENABLED and _capture_iface else None
+_tls   = TlsCapture(_capture_iface)    if SCAPY_ENABLED and _capture_iface else None
 
 
 @asynccontextmanager
