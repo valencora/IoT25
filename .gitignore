@@ -7,8 +7,6 @@
 models/
 *.pkl
 
-# Blacklist y datos sensibles
-ja3_blacklist.csv
 
 # Python
 __pycache__/
