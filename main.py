@@ -14,30 +14,32 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-# Disabled on OpenWrt/RPi4: scapy's AsyncSniffer requires promiscuous mode,
-# which OpenWrt's kernel rejects and freezes the boot. Flip to True once the
-# kernel grants CAP_NET_RAW + promisc on the target interface.
-SCAPY_ENABLED = False
+# Capture backend on OpenWrt: tcpdump (subprocess) feeding scapy as a passive
+# pcap parser. Replaces ScapyCollector, which froze OpenWrt by forcing the NIC
+# into promiscuous mode. Tcpdump itself runs with -p for the same reason.
+TCPDUMP_ENABLED = True
 
 from alert_manager import create_alert, get_active_alerts
 from database import DB_PATH, get_db, init_db
 from device_discovery import DeviceDiscovery
 from traffic_capture import TrafficCollector, TrafficSimulator
 
-if SCAPY_ENABLED:
-    from dns_capture import DnsCapture
-    from tls_capture import TlsCapture
-    from traffic_capture import ScapyCollector
+if TCPDUMP_ENABLED:
+    from tcpdump_capture import TcpdumpCapture, is_tcpdump_available
+    if is_tcpdump_available() is None:
+        logging.getLogger(__name__).error(
+            "tcpdump not installed — passive capture disabled. "
+            "Install on OpenWrt with: opkg install tcpdump"
+        )
 
 _discovery = DeviceDiscovery(interval=30, offline_threshold=2)
 _collector = TrafficCollector()
 # SIMULATE_TRAFFIC=1  → synthetic flows every 30 s (no router needed)
 _simulator = TrafficSimulator(interval=30) if os.getenv("SIMULATE_TRAFFIC") == "1" else None
-# CAPTURE_INTERFACE=wlo1 → real pcap capture on that NIC (needs sudo / CAP_NET_RAW)
-_capture_iface = os.getenv("CAPTURE_INTERFACE")
-_scapy = ScapyCollector(_capture_iface) if SCAPY_ENABLED and _capture_iface else None
-_dns   = DnsCapture(_capture_iface)    if SCAPY_ENABLED and _capture_iface else None
-_tls   = TlsCapture(_capture_iface)    if SCAPY_ENABLED and _capture_iface else None
+# CAPTURE_INTERFACE=wlo1 → real pcap capture on that NIC (needs root / CAP_NET_RAW).
+# Defaults to "any" so tcpdump captures across all interfaces by default.
+_capture_iface = os.getenv("CAPTURE_INTERFACE", "any")
+_tcpdump = TcpdumpCapture(_capture_iface) if TCPDUMP_ENABLED else None
 
 
 @asynccontextmanager
@@ -47,23 +49,15 @@ async def lifespan(app: FastAPI):
     _collector.start()
     if _simulator:
         _simulator.start()
-    if _scapy:
-        _scapy.start()
-    if _dns:
-        _dns.start()
-    if _tls:
-        _tls.start()
+    if _tcpdump:
+        _tcpdump.start()
     yield
     _discovery.stop()
     _collector.stop()
     if _simulator:
         _simulator.stop()
-    if _scapy:
-        _scapy.stop()
-    if _dns:
-        _dns.stop()
-    if _tls:
-        _tls.stop()
+    if _tcpdump:
+        _tcpdump.stop()
 
 
 app = FastAPI(title="IoT25", lifespan=lifespan)
