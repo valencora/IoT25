@@ -16,17 +16,22 @@ Estrategia general
 
 Requisitos
 ──────────
-  pip install scapy mac-vendor-lookup
-  Ejecutar con privilegios root / CAP_NET_RAW (necesario para ARP raw sockets).
+  pip install mac-vendor-lookup
+  El barrido ARP se delega a `nmap` o `arp-scan` (binarios del sistema) vía
+  subprocess. NO se usa Scapy: ponía la interfaz WiFi en modo promiscuo, lo
+  que desestabilizaba el driver de OpenWrt y tiraba la red completa.
+  Ejecutar con privilegios root (nmap/arp-scan necesitan root para el ARP sweep).
 """
 
 import logging
+import re
+import shutil
 import socket
+import subprocess
 import threading
+import xml.etree.ElementTree as ET
 from datetime import datetime, UTC
 from ipaddress import IPv4Interface
-
-from scapy.all import ARP, Ether, srp  # type: ignore
 
 from alert_manager import create_alert
 from database import get_db, init_db
@@ -118,31 +123,132 @@ def _infer_device_type(vendor: str | None, hostname: str | None) -> str:
     return "desconocido"
 
 
-def _arp_scan(network: str, timeout: int = 5) -> list[dict]:
+def _scan_with_nmap(network: str, timeout: int) -> list[dict]:
     """
-    Envía un ARP request broadcast a todo el rango CIDR y recolecta respuestas.
+    Descubre hosts con `nmap -sn` (ping/ARP sweep) y parsea la salida XML.
+
+    nmap abre la captura pcap con promisc=0, así que NO activa el modo
+    promiscuo en la interfaz — a diferencia de Scapy, que congelaba el
+    driver WiFi de OpenWrt.
+    """
+    result = subprocess.run(
+        ["nmap", "-sn", "-n", "-oX", "-", network],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        logger.warning(
+            "nmap terminó con código %d: %s", result.returncode, result.stderr.strip()
+        )
+
+    hosts: list[dict] = []
+    root = ET.fromstring(result.stdout)
+    for host in root.findall("host"):
+        status = host.find("status")
+        if status is None or status.get("state") != "up":
+            continue
+
+        ip = mac = None
+        for addr in host.findall("address"):
+            if addr.get("addrtype") == "ipv4":
+                ip = addr.get("addr")
+            elif addr.get("addrtype") == "mac":
+                mac = addr.get("addr")
+
+        # Sin MAC no podemos identificar el dispositivo (la IP cambia con DHCP).
+        # El propio host que ejecuta el escaneo aparece sin MAC → se omite.
+        if ip and mac:
+            hosts.append({"ip": ip, "mac": _normalize_mac(mac)})
+
+    return hosts
+
+
+# Línea de arp-scan: "192.168.1.1<TAB>aa:bb:cc:dd:ee:ff<TAB>Vendor..."
+_ARPSCAN_LINE = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){3})\s+([0-9a-fA-F:]{17})")
+
+
+def _scan_with_arpscan(network: str, timeout: int) -> list[dict]:
+    """
+    Descubre hosts con `arp-scan`. Las respuestas ARP son unicast a nuestra
+    propia MAC, así que arp-scan no necesita modo promiscuo tampoco.
+    """
+    result = subprocess.run(
+        ["arp-scan", "--retry=2", "--timeout=500", network],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        logger.warning(
+            "arp-scan terminó con código %d: %s",
+            result.returncode,
+            result.stderr.strip(),
+        )
+
+    hosts: list[dict] = []
+    for line in result.stdout.splitlines():
+        m = _ARPSCAN_LINE.match(line)
+        if m:
+            ip, mac = m.group(1), m.group(2)
+            hosts.append({"ip": ip, "mac": _normalize_mac(mac)})
+
+    return hosts
+
+
+def _arp_scan(network: str, timeout: int = 60) -> list[dict]:
+    """
+    Descubre los hosts activos de la red ejecutando una herramienta nativa
+    del sistema vía subprocess, en lugar de Scapy.
+
+    Motivo del cambio
+    -----------------
+    Scapy (srp/ARP) ponía la interfaz WiFi en modo promiscuo
+    ("device phy0-sta0 entered promiscuous mode" en dmesg), lo que
+    desestabilizaba el driver de OpenWrt y cortaba la red. `nmap -sn` y
+    `arp-scan` hacen el mismo barrido ARP sin tocar el modo promiscuo.
+
+    Prefiere nmap (abre pcap con promisc=0 de forma explícita); si no está
+    instalado, usa arp-scan como alternativa.
 
     Parámetros
     ----------
     network : str
         Rango CIDR, ej. '192.168.1.0/24'.
     timeout : int
-        Segundos de espera por respuestas antes de continuar.
+        Segundos máximos para el subprocess antes de abortar el escaneo.
 
     Retorna
     -------
     Lista de dicts con claves 'ip' y 'mac' por cada host que respondió.
     """
-    # Construir el paquete: Ethernet broadcast + ARP request al rango
-    packet = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=network)
+    if shutil.which("nmap"):
+        scanner, scan_fn = "nmap", _scan_with_nmap
+    elif shutil.which("arp-scan"):
+        scanner, scan_fn = "arp-scan", _scan_with_arpscan
+    else:
+        logger.error(
+            "No se encontró 'nmap' ni 'arp-scan' en PATH. "
+            "Instalar uno en OpenWrt: opkg install nmap  (o)  opkg install arp-scan"
+        )
+        return []
 
-    # srp envía capa 2 y retorna (respondidos, sin_respuesta)
-    answered, _ = srp(packet, timeout=timeout, verbose=False)
-
-    return [
-        {"ip": recv.psrc, "mac": _normalize_mac(recv.hwsrc)}
-        for _, recv in answered
-    ]
+    try:
+        hosts = scan_fn(network, timeout)
+        logger.debug("Escaneo vía %s: %d host(s).", scanner, len(hosts))
+        return hosts
+    except subprocess.TimeoutExpired:
+        logger.error("El escaneo con %s superó el timeout de %ds.", scanner, timeout)
+        return []
+    except FileNotFoundError:
+        logger.error("'%s' no está instalado o no es ejecutable.", scanner)
+        return []
+    except ET.ParseError:
+        logger.exception("No se pudo parsear la salida XML de nmap.")
+        return []
+    except Exception:
+        logger.exception("Error ejecutando el escaneo con %s.", scanner)
+        return []
 
 
 # ──────────────────────────────────────────────────────────────────────────────
