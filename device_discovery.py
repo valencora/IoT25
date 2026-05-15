@@ -39,6 +39,16 @@ from database import get_db, init_db
 logger = logging.getLogger(__name__)
 
 
+class ScanError(Exception):
+    """
+    El escaneo de red falló (timeout, herramienta ausente, salida ilegible).
+
+    Se distingue de "el escaneo terminó y no había hosts": un fallo NO debe
+    interpretarse como que la red quedó vacía, porque eso marcaría offline a
+    todos los dispositivos (flapping). Ante un ScanError el ciclo se omite.
+    """
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers de red
 # ──────────────────────────────────────────────────────────────────────────────
@@ -131,8 +141,10 @@ def _scan_with_nmap(network: str, timeout: int) -> list[dict]:
     promiscuo en la interfaz — a diferencia de Scapy, que congelaba el
     driver WiFi de OpenWrt.
     """
+    # -T4: timing agresivo  |  --max-retries 1: menos retransmisiones a los
+    # ~248 hosts que no responden en un /24 (es lo que más alarga el barrido).
     result = subprocess.run(
-        ["nmap", "-sn", "-n", "-oX", "-", network],
+        ["nmap", "-sn", "-n", "-T4", "--max-retries", "1", "-oX", "-", network],
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -196,7 +208,7 @@ def _scan_with_arpscan(network: str, timeout: int) -> list[dict]:
     return hosts
 
 
-def _arp_scan(network: str, timeout: int = 60) -> list[dict]:
+def _arp_scan(network: str, timeout: int = 120) -> list[dict]:
     """
     Descubre los hosts activos de la red ejecutando una herramienta nativa
     del sistema vía subprocess, en lugar de Scapy.
@@ -221,34 +233,38 @@ def _arp_scan(network: str, timeout: int = 60) -> list[dict]:
     Retorna
     -------
     Lista de dicts con claves 'ip' y 'mac' por cada host que respondió.
+
+    Lanza
+    -----
+    ScanError
+        Si el escaneo no se pudo completar (timeout, herramienta ausente,
+        salida ilegible). El llamador debe omitir el ciclo, no asumir que
+        la red está vacía.
     """
     if shutil.which("nmap"):
         scanner, scan_fn = "nmap", _scan_with_nmap
     elif shutil.which("arp-scan"):
         scanner, scan_fn = "arp-scan", _scan_with_arpscan
     else:
-        logger.error(
+        raise ScanError(
             "No se encontró 'nmap' ni 'arp-scan' en PATH. "
             "Instalar uno en OpenWrt: opkg install nmap  (o)  opkg install arp-scan"
         )
-        return []
 
     try:
         hosts = scan_fn(network, timeout)
         logger.debug("Escaneo vía %s: %d host(s).", scanner, len(hosts))
         return hosts
-    except subprocess.TimeoutExpired:
-        logger.error("El escaneo con %s superó el timeout de %ds.", scanner, timeout)
-        return []
-    except FileNotFoundError:
-        logger.error("'%s' no está instalado o no es ejecutable.", scanner)
-        return []
-    except ET.ParseError:
-        logger.exception("No se pudo parsear la salida XML de nmap.")
-        return []
-    except Exception:
-        logger.exception("Error ejecutando el escaneo con %s.", scanner)
-        return []
+    except subprocess.TimeoutExpired as exc:
+        raise ScanError(
+            f"El escaneo con {scanner} superó el timeout de {timeout}s."
+        ) from exc
+    except FileNotFoundError as exc:
+        raise ScanError(f"'{scanner}' no está instalado o no es ejecutable.") from exc
+    except ET.ParseError as exc:
+        raise ScanError("No se pudo parsear la salida XML de nmap.") from exc
+    except Exception as exc:
+        raise ScanError(f"Error ejecutando el escaneo con {scanner}: {exc}") from exc
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -467,11 +483,11 @@ class DeviceDiscovery:
         while not self._stop_event.is_set():
             try:
                 self._scan_once()
-            except PermissionError:
-                logger.error(
-                    "Sin permisos para enviar paquetes ARP. "
-                    "Ejecutar con sudo o asignar CAP_NET_RAW al proceso."
-                )
+            except ScanError as exc:
+                # Escaneo fallido: se omite el ciclo. No se tocan los
+                # contadores de ausencia, así que ningún dispositivo se
+                # marca offline por un fallo puntual del scanner.
+                logger.warning("Escaneo omitido — %s", exc)
             except Exception:
                 logger.exception("Error inesperado en el ciclo de escaneo.")
 
