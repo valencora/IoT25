@@ -32,7 +32,8 @@ if TCPDUMP_ENABLED:
             "Install on OpenWrt with: opkg install tcpdump"
         )
 
-_discovery = DeviceDiscovery(interval=30, offline_threshold=2)
+_iot_subnet = os.getenv("IOT_SUBNET")
+_discovery = DeviceDiscovery(network=_iot_subnet, interval=30, offline_threshold=2)
 _collector = TrafficCollector()
 # SIMULATE_TRAFFIC=1  → synthetic flows every 30 s (no router needed)
 _simulator = TrafficSimulator(interval=30) if os.getenv("SIMULATE_TRAFFIC") == "1" else None
