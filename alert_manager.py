@@ -61,7 +61,7 @@ def get_active_alerts() -> list[dict]:
     rows = conn.execute(
         """
         SELECT id, device_id, type, severity, message, technical_detail,
-               timestamp, acknowledged, resolved
+               timestamp, acknowledged, resolved, category
         FROM alerts
         WHERE acknowledged = 0
         ORDER BY

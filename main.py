@@ -90,6 +90,7 @@ def list_alerts(
     severity: str | None = None,
     device_id: int | None = None,
     acknowledged: bool | None = None,
+    category: str | None = None,
     limit: int = 100,
 ):
     conn = get_db()
@@ -104,6 +105,9 @@ def list_alerts(
     if acknowledged is not None:
         query += " AND acknowledged = ?"
         params.append(int(acknowledged))
+    if category is not None:
+        query += " AND category = ?"
+        params.append(category)
     query += " ORDER BY timestamp DESC LIMIT ?"
     params.append(limit)
     rows = conn.execute(query, params).fetchall()
@@ -133,6 +137,19 @@ def resolve_alert(alert_id: int):
     conn.execute("UPDATE alerts SET resolved = 1 WHERE id = ?", (alert_id,))
     conn.commit()
     return {"ok": True}
+
+
+@app.post("/api/alerts/{alert_id}/category")
+def set_alert_category(alert_id: int, category: str):
+    valid = {"unclassified", "suspicious", "not_suspicious"}
+    if category not in valid:
+        raise HTTPException(status_code=400, detail=f"Invalid category. Use one of: {valid}")
+    conn = get_db()
+    if conn.execute("SELECT id FROM alerts WHERE id = ?", (alert_id,)).fetchone() is None:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    conn.execute("UPDATE alerts SET category = ? WHERE id = ?", (category, alert_id))
+    conn.commit()
+    return {"ok": True, "alert_id": alert_id, "category": category}
 
 
 @app.get("/api/devices/{mac}/history")

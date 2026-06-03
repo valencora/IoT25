@@ -58,7 +58,8 @@ def init_db() -> None:
             recommendations  TEXT,   -- JSON
             timestamp        TEXT NOT NULL,
             acknowledged     INTEGER NOT NULL DEFAULT 0,
-            resolved         INTEGER NOT NULL DEFAULT 0
+            resolved         INTEGER NOT NULL DEFAULT 0,
+            category         TEXT NOT NULL DEFAULT 'unclassified'
         );
 
         CREATE TABLE IF NOT EXISTS traffic_flows (
