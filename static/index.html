@@ -97,6 +97,19 @@
     .severity.medium   { background: #422006; color: #fbbf24; }
     .severity.low      { background: #1e293b; color: #94a3b8; }
 
+    .category {
+      display: inline-block;
+      padding: 0.15rem 0.55rem;
+      border-radius: 999px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .category.unclassified  { background: #1e293b; color: #94a3b8; }
+    .category.suspicious    { background: #450a0a; color: #fca5a5; }
+    .category.not_suspicious { background: #052e16; color: #86efac; }
+
     .ack-btn {
       background: #1e3a8a;
       border: none;
@@ -110,6 +123,20 @@
     }
     .ack-btn:hover { background: #2563eb; color: #fff; }
     .ack-btn:disabled { opacity: 0.5; cursor: default; }
+
+    .cat-btn {
+      background: #1e293b;
+      border: none;
+      color: #94a3b8;
+      padding: 0.25rem 0.55rem;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s;
+    }
+    .cat-btn:hover { background: #2d3148; color: #e2e8f0; }
+    .cat-btn:disabled { opacity: 0.5; cursor: default; }
 
     .tabs {
       display: flex;
@@ -555,19 +582,42 @@
       return;
     }
 
+    const CAT_LABELS = {
+      unclassified:   'Sin clasificar',
+      suspicious:     'Sospechoso',
+      not_suspicious: 'No sospechoso',
+    };
+    const ALL_CATS = [
+      { value: 'suspicious',     label: 'Sospechoso' },
+      { value: 'not_suspicious', label: 'No sospechoso' },
+      { value: 'unclassified',   label: 'Sin clasificar' },
+    ];
+
     list.innerHTML = alerts.map(a => {
       const isAcked = a.acknowledged === 1 || a.acknowledged === true;
       const action = isAcked
         ? '<span class="alert-time">vista</span>'
         : `<button class="ack-btn" data-ack="${a.id}">Marcar como vista</button>`;
+
+      const cat = a.category ?? 'unclassified';
+      const catLabel = CAT_LABELS[cat] ?? 'Sin clasificar';
+      const catBtns = ALL_CATS
+        .filter(c => c.value !== cat)
+        .map(c => `<button class="cat-btn" data-cat-id="${a.id}" data-cat-value="${c.value}">${c.label}</button>`)
+        .join('');
+
       return `
         <div class="alert-item ${isAcked ? 'acked' : ''}" data-id="${a.id}">
           <div class="alert-row">
             <div class="alert-meta">
               <span class="severity ${escapeHtml(a.severity)}">${escapeHtml(a.severity)}</span>
+              <span class="category ${cat}">${catLabel}</span>
               <span class="alert-msg">${escapeHtml(a.message)}</span>
             </div>
             ${action}
+          </div>
+          <div class="alert-row" style="justify-content:flex-start;gap:0.4rem;margin-top:0.2rem">
+            ${catBtns}
           </div>
           <span class="alert-time">${escapeHtml(a.type)} · ${fmtDate(a.timestamp)}</span>
         </div>
@@ -576,6 +626,12 @@
 
     list.querySelectorAll('button[data-ack]').forEach(btn => {
       btn.addEventListener('click', () => acknowledgeAlert(parseInt(btn.dataset.ack, 10), btn));
+    });
+
+    list.querySelectorAll('button[data-cat-id]').forEach(btn => {
+      btn.addEventListener('click', () =>
+        setCategory(parseInt(btn.dataset.catId, 10), btn.dataset.catValue, btn)
+      );
     });
   }
 
@@ -590,6 +646,19 @@
     }
     await renderAlerts();
     refreshAlertsCount();
+  }
+
+  async function setCategory(id, category, btn) {
+    btn.disabled = true;
+    const prev = btn.textContent;
+    btn.textContent = 'Guardando…';
+    const res = await fetch(`/api/alerts/${id}/category?category=${category}`, { method: 'POST' });
+    if (!res.ok) {
+      btn.disabled = false;
+      btn.textContent = prev;
+      return;
+    }
+    await renderAlerts();
   }
 
   document.getElementById('alerts-btn').addEventListener('click', openAlerts);
