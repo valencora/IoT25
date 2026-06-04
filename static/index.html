@@ -163,6 +163,18 @@
     .alert-item.acked { opacity: 0.65; }
     .alert-item.acked .alert-msg { color: #94a3b8; }
 
+    .alert-group-title {
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: #64748b;
+      padding: 0.4rem 0;
+      margin-top: 0.75rem;
+      border-bottom: 1px solid #1e2235;
+    }
+    .alert-group-title:first-child { margin-top: 0; }
+
     main { padding: 2rem; max-width: 1200px; margin: 0 auto; }
 
     /* ── Stats ── */
@@ -365,6 +377,17 @@
     came_online:       'Volvió online',
   };
 
+  const CAT_LABELS = {
+    unclassified:   'Sin clasificar',
+    suspicious:     'Sospechoso',
+    not_suspicious: 'No sospechoso',
+  };
+  const ALL_CATS = [
+    { value: 'suspicious',     label: 'Sospechoso' },
+    { value: 'not_suspicious', label: 'No sospechoso' },
+    { value: 'unclassified',   label: 'Sin clasificar' },
+  ];
+
   function fmtDate(iso) {
     return new Date(iso).toLocaleString('es-AR');
   }
@@ -543,6 +566,8 @@
       <div class="tabs">
         <button class="tab ${_alertsTab === 'active' ? 'active' : ''}" data-tab="active">Activas</button>
         <button class="tab ${_alertsTab === 'history' ? 'active' : ''}" data-tab="history">Historial</button>
+        <button class="tab ${_alertsTab === 'suspicious' ? 'active' : ''}" data-tab="suspicious">Sospechosas</button>
+        <button class="tab ${_alertsTab === 'not_suspicious' ? 'active' : ''}" data-tab="not_suspicious">No sospechosas</button>
       </div>
       <div id="alerts-list">
         <p style="color:#64748b;padding:1rem">Cargando…</p>
@@ -563,66 +588,76 @@
     await renderAlerts();
   }
 
+  function renderAlertItem(a) {
+    const isAcked = a.acknowledged === 1 || a.acknowledged === true;
+    const action = isAcked
+      ? '<span class="alert-time">vista</span>'
+      : `<button class="ack-btn" data-ack="${a.id}">Marcar como vista</button>`;
+
+    const cat = a.category ?? 'unclassified';
+    const catLabel = CAT_LABELS[cat] ?? 'Sin clasificar';
+    const catBtns = ALL_CATS
+      .filter(c => c.value !== cat)
+      .map(c => `<button class="cat-btn" data-cat-id="${a.id}" data-cat-value="${c.value}">${c.label}</button>`)
+      .join('');
+
+    return `
+      <div class="alert-item ${isAcked ? 'acked' : ''}" data-id="${a.id}">
+        <div class="alert-row">
+          <div class="alert-meta">
+            <span class="severity ${escapeHtml(a.severity)}">${escapeHtml(a.severity)}</span>
+            <span class="category ${cat}">${catLabel}</span>
+            <span class="alert-msg">${escapeHtml(a.message)}</span>
+          </div>
+          ${action}
+        </div>
+        <div class="alert-row" style="justify-content:flex-start;gap:0.4rem;margin-top:0.2rem">
+          ${catBtns}
+        </div>
+        <span class="alert-time">${escapeHtml(a.type)} · ${fmtDate(a.timestamp)}</span>
+      </div>
+    `;
+  }
+
   async function renderAlerts() {
     const list = document.getElementById('alerts-list');
     if (!list) return;
 
-    const url = _alertsTab === 'active'
-      ? '/api/alerts/active'
-      : '/api/alerts?acknowledged=true&limit=200';
+    const isCategoryTab = _alertsTab === 'suspicious' || _alertsTab === 'not_suspicious';
+
+    let url;
+    if (_alertsTab === 'active') {
+      url = '/api/alerts/active';
+    } else if (_alertsTab === 'history') {
+      url = '/api/alerts?acknowledged=true&limit=200';
+    } else {
+      url = `/api/alerts?category=${_alertsTab}&limit=200`;
+    }
 
     const res = await fetch(url);
     const alerts = await res.json();
 
     if (alerts.length === 0) {
-      const msg = _alertsTab === 'active'
-        ? 'No hay alertas activas.'
-        : 'Sin alertas previas.';
-      list.innerHTML = `<p style="color:#64748b;padding:1rem">${msg}</p>`;
+      const msgs = {
+        active:        'No hay alertas activas.',
+        history:       'Sin alertas previas.',
+        suspicious:    'No hay alertas en esta categoría.',
+        not_suspicious: 'No hay alertas en esta categoría.',
+      };
+      list.innerHTML = `<p style="color:#64748b;padding:1rem">${msgs[_alertsTab]}</p>`;
       return;
     }
 
-    const CAT_LABELS = {
-      unclassified:   'Sin clasificar',
-      suspicious:     'Sospechoso',
-      not_suspicious: 'No sospechoso',
-    };
-    const ALL_CATS = [
-      { value: 'suspicious',     label: 'Sospechoso' },
-      { value: 'not_suspicious', label: 'No sospechoso' },
-      { value: 'unclassified',   label: 'Sin clasificar' },
-    ];
-
-    list.innerHTML = alerts.map(a => {
-      const isAcked = a.acknowledged === 1 || a.acknowledged === true;
-      const action = isAcked
-        ? '<span class="alert-time">vista</span>'
-        : `<button class="ack-btn" data-ack="${a.id}">Marcar como vista</button>`;
-
-      const cat = a.category ?? 'unclassified';
-      const catLabel = CAT_LABELS[cat] ?? 'Sin clasificar';
-      const catBtns = ALL_CATS
-        .filter(c => c.value !== cat)
-        .map(c => `<button class="cat-btn" data-cat-id="${a.id}" data-cat-value="${c.value}">${c.label}</button>`)
-        .join('');
-
-      return `
-        <div class="alert-item ${isAcked ? 'acked' : ''}" data-id="${a.id}">
-          <div class="alert-row">
-            <div class="alert-meta">
-              <span class="severity ${escapeHtml(a.severity)}">${escapeHtml(a.severity)}</span>
-              <span class="category ${cat}">${catLabel}</span>
-              <span class="alert-msg">${escapeHtml(a.message)}</span>
-            </div>
-            ${action}
-          </div>
-          <div class="alert-row" style="justify-content:flex-start;gap:0.4rem;margin-top:0.2rem">
-            ${catBtns}
-          </div>
-          <span class="alert-time">${escapeHtml(a.type)} · ${fmtDate(a.timestamp)}</span>
-        </div>
-      `;
-    }).join('');
+    if (isCategoryTab) {
+      const unacked = alerts.filter(a => !(a.acknowledged === 1 || a.acknowledged === true));
+      const acked   = alerts.filter(a =>   a.acknowledged === 1 || a.acknowledged === true);
+      let html = '';
+      if (unacked.length > 0) html += '<p class="alert-group-title">Activas</p>' + unacked.map(renderAlertItem).join('');
+      if (acked.length > 0)   html += '<p class="alert-group-title">Vistas</p>'  + acked.map(renderAlertItem).join('');
+      list.innerHTML = html;
+    } else {
+      list.innerHTML = alerts.map(renderAlertItem).join('');
+    }
 
     list.querySelectorAll('button[data-ack]').forEach(btn => {
       btn.addEventListener('click', () => acknowledgeAlert(parseInt(btn.dataset.ack, 10), btn));
