@@ -22,6 +22,7 @@ TCPDUMP_ENABLED = True
 from alert_manager import create_alert, get_active_alerts
 from database import DB_PATH, get_db, init_db
 from device_discovery import DeviceDiscovery
+from feature_extractor import FEATURE_NAMES, extract_features, refresh_all_baselines
 from traffic_capture import TrafficCollector, TrafficSimulator
 
 if TCPDUMP_ENABLED:
@@ -252,6 +253,50 @@ def suspicious_dns(limit: int = 100, offset: int = 0):
         "SELECT COUNT(*) FROM dns_queries WHERE is_suspicious = 1"
     ).fetchone()[0]
     return {"total": total, "offset": offset, "limit": limit, "items": [dict(r) for r in rows]}
+
+
+@app.get("/api/training/status")
+def training_status():
+    """
+    Recomputa el estado de baseline de todos los dispositivos y lo retorna.
+    Ordena por número de ventanas descendente: el dispositivo con más datos
+    (el IoT real) aparece primero; los dispositivos-ruido al final.
+    """
+    conn = get_db()
+    refresh_all_baselines(conn=conn)
+    rows = conn.execute(
+        """
+        SELECT d.id   AS device_id,
+               d.ip,
+               d.hostname,
+               tm.n_samples  AS n_windows,
+               tm.status,
+               tm.training_date
+        FROM   devices d
+        LEFT JOIN training_metadata tm ON tm.device_id = d.id
+        ORDER BY COALESCE(tm.n_samples, 0) DESC
+        """
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/devices/{device_id}/features")
+def device_features(device_id: int):
+    """
+    Devuelve las ventanas de features computadas para el dispositivo.
+    Útil para inspeccionar el baseline o depurar la extracción.
+    """
+    conn = get_db()
+    if conn.execute("SELECT id FROM devices WHERE id = ?", (device_id,)).fetchone() is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    windows = extract_features(device_id, conn=conn)
+    return {
+        "device_id":      device_id,
+        "n_windows":      len(windows),
+        "window_seconds": 300,
+        "feature_names":  FEATURE_NAMES,
+        "windows":        windows,
+    }
 
 
 @app.get("/api/stats")
