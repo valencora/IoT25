@@ -14,6 +14,7 @@ Cada fila de flujo se mapea a traffic_flows; las IPs de origen se registran como
 La base de salida es independiente de la base de producción (iot25.db).
 """
 
+import re
 import sys
 import hashlib
 from datetime import datetime, UTC
@@ -68,21 +69,43 @@ def _epoch_to_iso(raw: str) -> str:
         return datetime.now(UTC).isoformat()
 
 
-def _parse_meta(filepath: Path) -> tuple[list[str], str, str]:
+def _parse_meta(filepath: Path) -> tuple[list[str], str, str, bool]:
     """
     Lee el bloque de comentarios (#...) y extrae dinámicamente:
     - lista de campos (línea #fields)
     - valor unset  (línea #unset_field, por defecto '-')
     - valor empty  (línea #empty_field, por defecto '(empty)')
+    - honeypot_fmt: True si las columnas de etiqueta van separadas por espacios al final
+      (formato IoT-23 Honeypot) en lugar de tabs (formato IoT-23 Malware estándar).
+
+    Formato estándar (Malware):
+        #fields  ...  tunnel_parents<TAB>label<TAB>det_label
+        data:    ...  -<TAB>Benign<TAB>-
+
+    Formato Honeypot:
+        #fields  ...  tunnel_parents   label   detailed-label   (3 espacios)
+        data:    ...  -   benign   -
     """
     fields: list[str] = []
     unset = "-"
     empty = "(empty)"
+    honeypot_fmt = False
     with open(filepath, "r") as fh:
         for line in fh:
             line = line.rstrip("\n")
             if line.startswith("#fields"):
-                fields = line.split("\t")[1:]
+                raw_parts = line.split("\t")[1:]  # excluye '#fields'
+                fields = []
+                for part in raw_parts:
+                    # Si algún token contiene 2+ espacios consecutivos, es un bloque
+                    # de campos separados por espacios (formato Honeypot)
+                    if "  " in part:
+                        honeypot_fmt = True
+                        fields.extend(
+                            s for s in re.split(r" {2,}", part.strip()) if s
+                        )
+                    else:
+                        fields.append(part)
             elif line.startswith("#unset_field"):
                 unset = line.split("\t")[1]
             elif line.startswith("#empty_field"):
@@ -91,7 +114,26 @@ def _parse_meta(filepath: Path) -> tuple[list[str], str, str]:
                 break
     if not fields:
         raise ValueError("No se encontró la línea #fields en el archivo.")
-    return fields, unset, empty
+    return fields, unset, empty, honeypot_fmt
+
+
+def _split_row(line: str, honeypot_fmt: bool, n_fields: int) -> list[str]:
+    """
+    Parsea una línea de datos manejando ambos formatos de IoT-23:
+    - Estándar  : todo tab-separado → split simple por '\\t'.
+    - Honeypot  : los últimos N campos (label + detailed-label) están
+                  pegados al final como "tunnel_val   label_val   det_val"
+                  separados por 2+ espacios dentro del último campo tab.
+
+    Devuelve una lista de exactamente n_fields valores (o la que resulte).
+    """
+    parts = line.rstrip("\n").split("\t")
+    if not honeypot_fmt or len(parts) >= n_fields:
+        return parts
+    # Expande el último campo tab, que contiene los campos extra separados por espacios
+    *head, last = parts
+    extra = re.split(r" {2,}", last.strip())
+    return head + extra
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +216,9 @@ def import_conn_log(input_path: Path, output_db: Path) -> None:
     _ensure_extra_columns(conn)
 
     # --- Parsear header dinámicamente ---
-    fields, unset_val, empty_val = _parse_meta(input_path)
+    fields, unset_val, empty_val, honeypot_fmt = _parse_meta(input_path)
+    fmt_name = "Honeypot (espacios)" if honeypot_fmt else "estándar (tabs)"
+    print(f"  Formato detectado  : {fmt_name}")
     print(f"  Campos detectados ({len(fields)}): {', '.join(fields)}\n")
 
     # Índices de los campos usados
@@ -189,8 +233,12 @@ def import_conn_log(input_path: Path, output_db: Path) -> None:
         idx_duration = fi("duration")
         idx_bytes    = fi("orig_bytes")
         idx_pkts     = fi("orig_pkts")
-        idx_label      = fi("label")
-        idx_det_label  = fi("det_label")
+        idx_label    = fi("label")
+        # Campo de tipo de ataque: "det_label" en Malware, "detailed-label" en Honeypot
+        try:
+            idx_det_label = fi("det_label")
+        except ValueError:
+            idx_det_label = fi("detailed-label")
     except ValueError as e:
         sys.exit(f"Error: campo obligatorio no encontrado en #fields: {e}")
 
@@ -201,7 +249,7 @@ def import_conn_log(input_path: Path, output_db: Path) -> None:
         for line in fh:
             if line.startswith("#"):
                 continue
-            parts = line.rstrip("\n").split("\t")
+            parts = _split_row(line, honeypot_fmt, len(fields))
             if len(parts) > idx_src_ip:
                 ip = parts[idx_src_ip]
                 if ip and ip not in (unset_val, empty_val):
@@ -227,7 +275,7 @@ def import_conn_log(input_path: Path, output_db: Path) -> None:
         for line in fh:
             if line.startswith("#"):
                 continue
-            parts = line.rstrip("\n").split("\t")
+            parts = _split_row(line, honeypot_fmt, len(fields))
             if len(parts) < len(fields):
                 skipped += 1
                 continue
@@ -242,7 +290,9 @@ def import_conn_log(input_path: Path, output_db: Path) -> None:
                 skipped += 1
                 continue
 
-            label = _zeek_val(parts[idx_label], unset_val, empty_val) or "Unknown"
+            # Normalizar label a título: "benign"→"Benign", "Malicious"→"Malicious"
+            raw_label = _zeek_val(parts[idx_label], unset_val, empty_val) or "Unknown"
+            label = raw_label.capitalize()
             label_counts[label] = label_counts.get(label, 0) + 1
 
             det_label = _zeek_val(parts[idx_det_label], unset_val, empty_val)
