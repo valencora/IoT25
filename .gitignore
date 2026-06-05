@@ -3,6 +3,10 @@
 *.db-shm
 *.db-wal
 
+# Datasets descargados (IoT-23 y similares — archivos pesados, no van al repo)
+data/
+*.log.labeled
+
 # Modelos entrenados
 models/
 *.pkl
