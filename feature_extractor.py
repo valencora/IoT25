@@ -177,7 +177,14 @@ def extract_features(
     """
     params: list = [device_id]
     if benign_only:
-        query += " AND (label IS NULL OR label = 'Benign')"
+        # La columna 'label' solo existe en bases importadas de IoT-23.
+        # En producción (iot25.db) no existe → todos los flujos son tráfico
+        # real sin etiquetar, equivalentes a "benignos" por definición.
+        col_exists = conn.execute(
+            "SELECT 1 FROM pragma_table_info('traffic_flows') WHERE name='label'"
+        ).fetchone()
+        if col_exists:
+            query += " AND (label IS NULL OR label = 'Benign')"
     if since:
         query += " AND timestamp >= ?"
         params.append(since)
