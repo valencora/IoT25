@@ -211,12 +211,15 @@ def train_device(device_id: int, conn: Connection | None = None) -> dict:
     norm_dicts  = [_normalize(fd, normalizer) for fd in feature_dicts]
 
     # ── 4. Construir modelo ───────────────────────────────────────────────────
-    # window_size = nº de muestras de entrenamiento para que todo el baseline
-    # entre en una sola ventana del algoritmo deslizante.
+    # window_size = exactamente el nº de ventanas de entrenamiento.
+    # Importante: si window_size > n_muestras, HalfSpaceTrees devuelve
+    # scores 0.0 porque nunca llena su ventana de referencia → umbral=0
+    # → modelo inútil.  Usar len() exacto garantiza que todo el baseline
+    # quepa en una sola ventana de calibración.
     model = anomaly.HalfSpaceTrees(
         n_trees=25,
         height=8,
-        window_size=max(len(norm_dicts), 50),
+        window_size=len(norm_dicts),
         seed=42,
     )
 
