@@ -133,6 +133,7 @@ def extract_features(
     since: str | None = None,
     until: str | None = None,
     window_seconds: int = WINDOW_SECONDS,
+    benign_only: bool = False,
 ) -> list[dict]:
     """
     Calcula un vector de features por ventana de tiempo para el dispositivo.
@@ -143,6 +144,12 @@ def extract_features(
     conn           : Conexión SQLite (usa get_db() si es None).
     since / until  : Filtros opcionales de rango (ISO 8601 UTC).
     window_seconds : Duración de cada ventana en segundos.
+    benign_only    : Si True, excluye flujos con label='Malicious'.
+                     Pasa `label IS NULL OR label = 'Benign'`, lo que
+                     incluye todos los flujos de producción (sin label)
+                     y solo los etiquetados como benignos en datasets IoT-23.
+                     Debe usarse siempre en el contexto de entrenamiento para
+                     evitar que flujos maliciosos contaminen el baseline.
 
     Retorna
     -------
@@ -151,7 +158,6 @@ def extract_features(
           {
             "window_start": "2018-09-21T11:25:00+00:00",
             "window_epoch": 1537526700,
-            "n_flows_raw": 12,          # flujos en la ventana (antes de features)
             "features": {
               "n_flows": 12,
               "bytes_total": 4096,
@@ -170,6 +176,8 @@ def extract_features(
         WHERE device_id = ?
     """
     params: list = [device_id]
+    if benign_only:
+        query += " AND (label IS NULL OR label = 'Benign')"
     if since:
         query += " AND timestamp >= ?"
         params.append(since)

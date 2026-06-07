@@ -20,6 +20,7 @@ logging.basicConfig(
 TCPDUMP_ENABLED = True
 
 from alert_manager import create_alert, get_active_alerts
+from anomaly_detector import score_all_windows, train_all_ready, train_device
 from database import DB_PATH, get_db, init_db
 from device_discovery import DeviceDiscovery
 from feature_extractor import FEATURE_NAMES, extract_features, refresh_all_baselines
@@ -253,6 +254,54 @@ def suspicious_dns(limit: int = 100, offset: int = 0):
         "SELECT COUNT(*) FROM dns_queries WHERE is_suspicious = 1"
     ).fetchone()[0]
     return {"total": total, "offset": offset, "limit": limit, "items": [dict(r) for r in rows]}
+
+
+@app.post("/api/training/train")
+def train_all():
+    """
+    Entrena el Isolation Forest para todos los dispositivos con status='ready'.
+    Los dispositivos 'excluded', 'pending' y ya 'trained' se omiten.
+    """
+    conn = get_db()
+    results = train_all_ready(conn=conn)
+    trained  = [r for r in results if r.get("ok")]
+    skipped  = [r for r in results if not r.get("ok")]
+    return {
+        "trained": len(trained),
+        "skipped": len(skipped),
+        "results": results,
+    }
+
+
+@app.post("/api/devices/{device_id}/train")
+def train_one(device_id: int):
+    """
+    Entrena (o re-entrena) el Isolation Forest para un dispositivo concreto.
+    El dispositivo debe estar en status='ready' o 'trained' en training_metadata.
+    """
+    conn = get_db()
+    if conn.execute("SELECT id FROM devices WHERE id = ?", (device_id,)).fetchone() is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    result = train_device(device_id, conn=conn)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("reason", "training failed"))
+    return result
+
+
+@app.get("/api/devices/{device_id}/anomalies")
+def device_anomalies(device_id: int):
+    """
+    Puntúa todas las ventanas de features del dispositivo con su modelo
+    Isolation Forest entrenado y devuelve cada ventana con score e is_anomaly.
+    Requiere que el modelo esté entrenado (POST /api/devices/{id}/train primero).
+    """
+    conn = get_db()
+    if conn.execute("SELECT id FROM devices WHERE id = ?", (device_id,)).fetchone() is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    result = score_all_windows(device_id, conn=conn)
+    if "error" in result:
+        raise HTTPException(status_code=409, detail=result["error"])
+    return result
 
 
 @app.get("/api/training/status")
