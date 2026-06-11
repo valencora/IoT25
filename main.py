@@ -21,7 +21,13 @@ logging.basicConfig(
 TCPDUMP_ENABLED = True
 
 from alert_manager import create_alert, get_active_alerts
-from anomaly_detector import score_all_windows, train_all_ready, train_device
+from anomaly_detector import (
+    AnomalyScanner,
+    generate_anomaly_alerts,
+    score_all_windows,
+    train_all_ready,
+    train_device,
+)
 from database import DB_PATH, get_db, init_db
 from device_discovery import DeviceDiscovery
 from feature_extractor import FEATURE_NAMES, extract_features, refresh_all_baselines
@@ -44,6 +50,9 @@ _simulator = TrafficSimulator(interval=30) if os.getenv("SIMULATE_TRAFFIC") == "
 # Defaults to "any" so tcpdump captures across all interfaces by default.
 _capture_iface = os.getenv("CAPTURE_INTERFACE", "any")
 _tcpdump = TcpdumpCapture(_capture_iface) if TCPDUMP_ENABLED else None
+# Scanner de anomalías: corre cada 5 min (= 1 ventana de features) y genera
+# alertas automáticas para los dispositivos con modelo entrenado.
+_scanner = AnomalyScanner(interval=300)
 
 
 @asynccontextmanager
@@ -55,6 +64,7 @@ async def lifespan(app: FastAPI):
         _simulator.start()
     if _tcpdump:
         _tcpdump.start()
+    _scanner.start()
     yield
     _discovery.stop()
     _collector.stop()
@@ -62,6 +72,7 @@ async def lifespan(app: FastAPI):
         _simulator.stop()
     if _tcpdump:
         _tcpdump.stop()
+    _scanner.stop()
 
 
 app = FastAPI(title="IoT25", lifespan=lifespan)
@@ -303,6 +314,29 @@ def device_anomalies(device_id: int):
     if "error" in result:
         raise HTTPException(status_code=409, detail=result["error"])
     return result
+
+
+@app.post("/api/devices/{device_id}/scan-anomalies")
+def scan_anomalies(device_id: int):
+    """
+    Ejecuta el scoring + generación de alertas para un dispositivo concreto.
+    Equivale a lo que hace AnomalyScanner periódicamente, pero de forma manual.
+    Útil para pruebas y demos.
+    Requiere que el modelo esté entrenado.
+    """
+    conn = get_db()
+    if conn.execute("SELECT id FROM devices WHERE id = ?", (device_id,)).fetchone() is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    row = conn.execute(
+        "SELECT status FROM training_metadata WHERE device_id = ?", (device_id,)
+    ).fetchone()
+    if row is None or row["status"] != "trained":
+        raise HTTPException(
+            status_code=409,
+            detail="sin modelo entrenado — ejecutá POST /api/devices/{id}/train primero",
+        )
+    n = generate_anomaly_alerts(device_id, conn=conn)
+    return {"device_id": device_id, "alerts_created": n}
 
 
 class TrainSelectedBody(BaseModel):

@@ -27,12 +27,14 @@ El modelo NO usa scikit-learn ni numpy; solo river y pickle de la stdlib.
 
 import logging
 import pickle
+import threading
 from datetime import datetime, UTC
 from pathlib import Path
 from sqlite3 import Connection
 
 from river import anomaly
 
+from alert_manager import create_alert
 from database import get_db
 from feature_extractor import FEATURE_NAMES, extract_features
 
@@ -389,3 +391,363 @@ def score_all_windows(device_id: int, conn: Connection | None = None) -> dict:
         "model_trained_at": payload["trained_at"],
         "windows":          scored,
     }
+
+
+# ── Generación de alertas desde anomalías ────────────────────────────────────
+
+# Mensajes en lenguaje cotidiano por feature y dirección de desviación.
+# Tupla: (mensaje si el valor es ALTO/FUERA-POR-ARRIBA, mensaje si es BAJO/FUERA-POR-ABAJO)
+# None indica que esa dirección no es una señal de alarma relevante.
+_FEAT_THREAT_MSG: dict[str, tuple[str | None, str | None]] = {
+    "n_dst_ips": (
+        "se conectó a muchos más destinos de lo habitual, lo que puede indicar"
+        " un escaneo de red o propagación a otros equipos",
+        "se comunicó de forma sostenida con un único destino"
+        " (posible servidor de control remoto)",
+    ),
+    "n_dst_ports": (
+        "accedió a un gran número de puertos distintos, algo típico de un"
+        " escaneo de puertos o de un intento de intrusión",
+        None,
+    ),
+    "bytes_total": (
+        "transfirió un volumen de datos muy superior a lo habitual,"
+        " lo que puede indicar exfiltración de información",
+        None,
+    ),
+    "bytes_mean": (
+        "cada conexión movió muchos más datos de lo normal",
+        None,
+    ),
+    "packets_total": (
+        "generó una cantidad de paquetes muy superior a lo habitual,"
+        " señal de actividad de red elevada o posible ataque de denegación de servicio",
+        None,
+    ),
+    "packets_mean": (
+        "los flujos de tráfico individuales fueron mucho más voluminosos de lo normal",
+        None,
+    ),
+    "n_flows": (
+        "generó muchas más conexiones de lo habitual,"
+        " indicativo de actividad de red anormalmente elevada",
+        None,
+    ),
+    "duration_mean_ms": (
+        "mantuvo conexiones activas durante mucho más tiempo de lo normal,"
+        " algo típico de conexiones persistentes a servidores externos",
+        None,
+    ),
+    "pct_udp": (
+        "cambió drásticamente el tipo de tráfico que genera hacia UDP,"
+        " inusual para este dispositivo y común en ataques de amplificación o tunelización",
+        None,
+    ),
+    "pct_other": (
+        "utilizó protocolos de red poco habituales para este dispositivo",
+        None,
+    ),
+    "pct_tcp": (
+        "cambió el tipo de tráfico predominante hacia TCP,"
+        " algo inusual para el comportamiento habitual de este dispositivo",
+        None,
+    ),
+}
+
+# Peso de alarma por feature: prioriza las más relevantes cuando hay empate.
+_FEAT_ALARM_WEIGHT: dict[str, int] = {
+    "n_dst_ips":     10,
+    "n_dst_ports":    9,
+    "bytes_total":    8,
+    "n_flows":        7,
+    "packets_total":  6,
+    "duration_mean_ms": 5,
+    "bytes_mean":     4,
+    "pct_udp":        3,
+    "pct_other":      3,
+    "pct_tcp":        2,
+    "packets_mean":   2,
+}
+
+
+def _top_deviated_features(
+    features: dict,
+    normalizer: dict[str, tuple[float, float]],
+    top_n: int = 5,
+) -> list[dict]:
+    """
+    Identifica las features más llamativas respecto al rango del baseline.
+
+    Criterio (por orden de prioridad):
+    1. Features FUERA del rango de entrenamiento (outside > 0): comportamiento
+       nuevo que el modelo nunca vio en training.
+    2. Features en el EXTREMO del rango (normalized >= 0.85 o <= 0.15):
+       en el límite de lo observado, posible causa de anomalía combinatoria.
+
+    En caso de empate, _FEAT_ALARM_WEIGHT prioriza las features más relevantes
+    para la detección de amenazas (n_dst_ips > n_dst_ports > bytes > ...).
+
+    Devuelve lista con:
+      outside   — cuánto excede el rango [0,1] (>0 si está fuera)
+      direction — "above" si el valor es alto, "below" si es bajo
+    """
+    items = []
+    for fname, val in features.items():
+        if fname not in normalizer:
+            continue
+        mn, mx = normalizer[fname]
+        rng = mx - mn
+        if rng == 0.0:
+            continue
+        normalized = (val - mn) / rng
+        outside    = max(0.0, normalized - 1.0) + max(0.0, -normalized)
+        extremeness = max(normalized, 1.0 - normalized)
+        # Fuera del rango pesa 10×; extremo cercano dentro pesa 1×.
+        # _FEAT_ALARM_WEIGHT actúa como desempate entre features con score similar.
+        alarm_boost = _FEAT_ALARM_WEIGHT.get(fname, 1) * 0.001
+        score = outside * 10.0 + max(0.0, extremeness - 0.85) + alarm_boost
+        if score > alarm_boost:  # ignorar si solo tiene el boost sin desviación real
+            items.append({
+                "name":       fname,
+                "val":        val,
+                "mn":         mn,
+                "mx":         mx,
+                "normalized": normalized,
+                "outside":    outside,
+                "direction":  "above" if normalized >= 0.5 else "below",
+                "score":      score,
+            })
+    return sorted(items, key=lambda x: x["score"], reverse=True)[:top_n]
+
+
+def _build_anomaly_message(
+    device_label: str,
+    window_start: str | None,
+    features: dict,
+    normalizer: dict[str, tuple[float, float]],
+    n_anomalies: int,
+    n_windows: int,
+    severity: str = "medium",
+) -> str:
+    """
+    Construye un mensaje en lenguaje cotidiano para un usuario no técnico.
+
+    - No incluye valores numéricos crudos: describe qué ocurrió, no cuánto.
+    - Prioriza las 1-2 desviaciones más relevantes como señal de amenaza.
+    - Omite features cuya baja no es indicativa de ataque (ej. pocos bytes).
+    - Los datos exactos van en technical_detail para quien quiera el detalle.
+    """
+    ts_str = ""
+    if window_start:
+        try:
+            dt = datetime.fromisoformat(window_start.replace("Z", "+00:00"))
+            ts_str = f" el {dt.strftime('%d/%m/%Y')} a las {dt.strftime('%H:%M')}"
+        except Exception:
+            pass
+
+    severity_phrase = {
+        "critical": "un comportamiento altamente anómalo",
+        "high":     "un comportamiento inusual",
+        "medium":   "actividad posiblemente inusual",
+    }.get(severity, "un comportamiento inusual")
+
+    period_ctx = f"{n_anomalies} de {n_windows} períodos de 5 min anómalos"
+    intro = (
+        f"El dispositivo {device_label} mostró {severity_phrase}{ts_str}"
+        f" ({period_ctx})."
+    )
+
+    # Seleccionar las features más desviadas y filtrar a las alarming
+    top = _top_deviated_features(features, normalizer, top_n=5)
+    threat_phrases: list[str] = []
+    for t in top:
+        msg_pair = _FEAT_THREAT_MSG.get(t["name"])
+        if not msg_pair:
+            continue
+        msg = msg_pair[0] if t["direction"] == "above" else msg_pair[1]
+        if msg is None:
+            continue  # esa dirección no es señal de alarma
+        threat_phrases.append(msg)
+        if len(threat_phrases) >= 2:
+            break
+
+    if not threat_phrases:
+        return intro
+
+    if len(threat_phrases) == 1:
+        body = f" {threat_phrases[0][0].upper()}{threat_phrases[0][1:]}."
+    else:
+        body = (
+            f" {threat_phrases[0][0].upper()}{threat_phrases[0][1:]};"
+            f" además, {threat_phrases[1]}."
+        )
+
+    return intro + body
+
+
+def _anomaly_severity(score: float, threshold: float) -> str:
+    """
+    Deriva la severidad a partir del exceso normalizado sobre el umbral.
+
+    Criterio (exceso = (score - threshold) / (1 - threshold)):
+      < 0.25  → "medium"   score apenas sobre el umbral
+      0.25–0.60 → "high"   claramente anómalo
+      >= 0.60  → "critical" score muy elevado
+    """
+    if threshold >= 1.0:
+        return "high"
+    excess = (score - threshold) / (1.0 - threshold)
+    if excess < 0.25:
+        return "medium"
+    if excess < 0.60:
+        return "high"
+    return "critical"
+
+
+def generate_anomaly_alerts(device_id: int, conn: Connection | None = None) -> int:
+    """
+    Puntúa todas las ventanas del dispositivo y crea una alerta por cada
+    ventana anómala detectada.
+
+    El anti-duplicados de create_alert (10 min por device_id + type) filtra
+    automáticamente las repeticiones: en una pasada con 22 ventanas anómalas
+    solo pasa la primera de cada tipo en los últimos 10 minutos.
+
+    Las ventanas se procesan de mayor a menor score para que la primera alerta
+    —la que pasa el filtro de duplicados— corresponda a la anomalía más grave.
+
+    Retorna el número de alertas efectivamente insertadas.
+    """
+    if conn is None:
+        conn = get_db()
+
+    dev_row = conn.execute(
+        "SELECT ip, hostname FROM devices WHERE id = ?", (device_id,)
+    ).fetchone()
+    if dev_row is None:
+        logger.warning("generate_anomaly_alerts: device_id=%d no encontrado", device_id)
+        return 0
+
+    device_label = dev_row["hostname"] or dev_row["ip"] or f"dispositivo #{device_id}"
+
+    result = score_all_windows(device_id, conn=conn)
+    if "error" in result:
+        logger.debug(
+            "generate_anomaly_alerts: device_id=%d sin modelo — %s",
+            device_id, result["error"],
+        )
+        return 0
+
+    # Ordenar de mayor a menor score: la peor anomalía genera la alerta primero.
+    anomalous = sorted(
+        [w for w in result["windows"] if w["is_anomaly"]],
+        key=lambda w: w["score"],
+        reverse=True,
+    )
+    if not anomalous:
+        return 0
+
+    payload    = _load_model(device_id)
+    normalizer = payload["normalizer"] if payload else {}
+    threshold  = result["threshold"]
+
+    n_created = 0
+    for w in anomalous:
+        severity = _anomaly_severity(w["score"], threshold)
+        message  = _build_anomaly_message(
+            device_label = device_label,
+            window_start = w["window_start"],
+            features     = w["features"],
+            normalizer   = normalizer,
+            n_anomalies  = result["n_anomalies"],
+            n_windows    = result["n_windows"],
+            severity     = severity,
+        )
+        alert_id = create_alert(
+            device_id        = device_id,
+            alert_type       = "anomaly_iforest",
+            severity         = severity,
+            message          = message,
+            technical_detail = {
+                "score":        w["score"],
+                "threshold":    threshold,
+                "window_start": w["window_start"],
+                "features":     w["features"],
+            },
+        )
+        if alert_id is not None:
+            n_created += 1
+
+    logger.info(
+        "generate_anomaly_alerts: device_id=%d ventanas_anómalas=%d alertas_creadas=%d",
+        device_id, len(anomalous), n_created,
+    )
+    return n_created
+
+
+# ── Scanner periódico ─────────────────────────────────────────────────────────
+
+class AnomalyScanner:
+    """
+    Hilo daemon que ejecuta generate_anomaly_alerts() para todos los
+    dispositivos entrenados cada `interval` segundos.
+
+    Sigue el mismo patrón que DeviceDiscovery: start/stop/scan_now más un
+    bucle _run interrumpible via threading.Event.
+
+    El intervalo por defecto (300 s = 5 min) coincide con el tamaño de la
+    ventana de features: cada ciclo procesa las ventanas más recientes del
+    tráfico capturado sin solaparse innecesariamente con el ciclo anterior.
+    El anti-duplicados de create_alert (10 min) absorbe cualquier solapamiento.
+    """
+
+    def __init__(self, interval: int = 300) -> None:
+        self.interval = interval
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Lanza el hilo de escaneo en background. Idempotente si ya corre."""
+        if self._thread and self._thread.is_alive():
+            logger.warning("AnomalyScanner ya está corriendo.")
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="AnomalyScanner",
+            daemon=True,
+        )
+        self._thread.start()
+        logger.info("AnomalyScanner iniciado | intervalo=%ds", self.interval)
+
+    def stop(self) -> None:
+        """Señala al hilo que se detenga y espera su finalización."""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=self.interval + 10)
+        logger.info("AnomalyScanner detenido.")
+
+    def scan_now(self) -> int:
+        """Dispara un escaneo inmediato (bloqueante). Retorna alertas creadas."""
+        return self._scan_all()
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self._scan_all()
+            except Exception:
+                logger.exception("Error inesperado en AnomalyScanner.")
+            self._stop_event.wait(self.interval)
+
+    def _scan_all(self) -> int:
+        """Escanea todos los dispositivos trained y retorna alertas creadas."""
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT device_id FROM training_metadata WHERE status = 'trained'"
+        ).fetchall()
+        if not rows:
+            return 0
+        total = sum(generate_anomaly_alerts(r["device_id"], conn=conn) for r in rows)
+        if total:
+            logger.info("AnomalyScanner: %d alerta(s) generada(s) en este ciclo.", total)
+        return total

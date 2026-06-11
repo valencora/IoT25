@@ -132,6 +132,15 @@ def init_db() -> None:
     """)
 
     _insert_default_settings(cursor)
+
+    # ── Migraciones para bases creadas con versiones anteriores del schema ───
+    # Idempotentes: sólo actúan si la columna aún no existe.
+    existing = {row[1] for row in cursor.execute("PRAGMA table_info(alerts)")}
+    if "category" not in existing:
+        cursor.execute(
+            "ALTER TABLE alerts ADD COLUMN category TEXT NOT NULL DEFAULT 'unclassified'"
+        )
+
     conn.commit()
 
 
