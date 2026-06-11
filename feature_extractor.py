@@ -282,10 +282,14 @@ def update_baseline_status(device_id: int, conn: Connection | None = None) -> di
 
     # ── Upsert en training_metadata ───────────────────────────────────────────
     existing = conn.execute(
-        "SELECT id FROM training_metadata WHERE device_id = ?", (device_id,)
+        "SELECT id, status FROM training_metadata WHERE device_id = ?", (device_id,)
     ).fetchone()
 
     if existing:
+        # No degradar 'trained' → 'ready'/'pending': si ya hay modelo entrenado,
+        # conservar ese status y solo actualizar n_samples.
+        if existing["status"] == "trained":
+            status = "trained"
         conn.execute(
             """
             UPDATE training_metadata

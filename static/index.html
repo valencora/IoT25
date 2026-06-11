@@ -387,6 +387,115 @@
     #train-feedback.error { color: #f87171; }
 
     #modal.wide { max-width: 860px; }
+
+    /* ── Anomaly panel ─────────────────────────────────────────────────── */
+    #anomalies-btn {
+      background: #2d3148;
+      border: 1px solid #3d4258;
+      color: #e2e8f0;
+      padding: 0.5rem 0.85rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.875rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: background 0.15s;
+    }
+    #anomalies-btn:hover { background: #3d4258; }
+
+    .anom-device-sel-wrap {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      margin-bottom: 0.9rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid #2d3148;
+    }
+    .anom-device-sel {
+      background: #12152a;
+      border: 1px solid #2d3148;
+      color: #e2e8f0;
+      padding: 0.4rem 0.75rem;
+      border-radius: 5px;
+      font-size: 0.85rem;
+      flex: 1;
+      cursor: pointer;
+    }
+    .anom-device-sel:focus { outline: none; border-color: #a78bfa; }
+
+    .anom-refresh-btn {
+      background: #1e293b;
+      border: none;
+      color: #94a3b8;
+      padding: 0.35rem 0.75rem;
+      border-radius: 5px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .anom-refresh-btn:hover { background: #2d3148; color: #e2e8f0; }
+
+    .anom-summary {
+      display: flex;
+      gap: 0.6rem;
+      margin-bottom: 0.9rem;
+      flex-wrap: wrap;
+    }
+    .anom-stat {
+      background: #12152a;
+      border: 1px solid #2d3148;
+      border-radius: 6px;
+      padding: 0.6rem 0.9rem;
+      flex: 1;
+      min-width: 90px;
+    }
+    .anom-stat-label {
+      font-size: 0.68rem;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .anom-stat-value {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-top: 0.2rem;
+      line-height: 1.2;
+    }
+    .anom-stat-mono  { font-family: monospace; font-size: 1rem; }
+    .anom-stat-small { font-size: 0.75rem; color: #94a3b8; margin-top: 0.3rem; }
+
+    .anom-badge {
+      display: inline-block;
+      padding: 0.15rem 0.55rem;
+      border-radius: 999px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .anom-badge.anomaly { background: #450a0a; color: #fca5a5; }
+    .anom-badge.normal  { background: #1e293b; color: #64748b; }
+
+    .anom-row             { background: rgba(248,113,113,0.05); }
+    .anom-row:hover       { background: rgba(248,113,113,0.10) !important; }
+
+    .feat-detail-row      { display: none; background: #12152a; cursor: default; }
+    .feat-detail-row:hover { background: #12152a !important; }
+    .feat-detail-row.open { display: table-row; }
+
+    .feat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 0.45rem 1.25rem;
+      padding: 0.7rem 1rem;
+    }
+    .feat-item-label { font-size: 0.68rem; color: #64748b; text-transform: uppercase; letter-spacing:.03em; }
+    .feat-item-val   { font-family: monospace; font-size: 0.82rem; color: #e2e8f0; margin-top: 0.1rem; }
+
+    .score-bar-wrap { display: flex; align-items: center; gap: 0.4rem; }
+    .score-bar-bg   { background: #2d3148; border-radius: 2px; width: 48px; height: 5px; overflow: hidden; flex-shrink: 0; }
+    .score-bar-fill { height: 100%; border-radius: 2px; }
   </style>
 </head>
 <body>
@@ -394,6 +503,9 @@
 <header>
   <h1>IoT25 — Monitor de Red</h1>
   <div class="header-right">
+    <button id="anomalies-btn" type="button" title="Ver anomalías detectadas por el modelo">
+      ⚠️ Anomalías
+    </button>
     <button id="training-btn" type="button" title="Gestionar entrenamiento de modelos">
       🧠 Entrenamiento
     </button>
@@ -980,6 +1092,221 @@
     if (e.target === document.getElementById('overlay')) closeModal();
   });
 
+  // ── Anomaly panel ─────────────────────────────────────────────────────────
+
+  const FEAT_LABELS = {
+    n_flows:          'Flujos',
+    bytes_total:      'Bytes totales',
+    bytes_mean:       'Bytes/flujo',
+    packets_total:    'Paquetes totales',
+    packets_mean:     'Paquetes/flujo',
+    n_dst_ips:        'IPs destino',
+    n_dst_ports:      'Puertos destino',
+    duration_mean_ms: 'Duración media',
+    pct_tcp:          'TCP',
+    pct_udp:          'UDP',
+    pct_other:        'Otros proto',
+  };
+
+  function fmtFeature(name, val) {
+    if (name.startsWith('pct_')) return (val * 100).toFixed(1) + '%';
+    if (name === 'bytes_total' || name === 'bytes_mean') {
+      if (val >= 1e6) return (val / 1e6).toFixed(2) + ' MB';
+      if (val >= 1e3) return (val / 1e3).toFixed(1) + ' KB';
+      return Math.round(val) + ' B';
+    }
+    if (name === 'duration_mean_ms') {
+      if (val >= 60000) return (val / 60000).toFixed(1) + ' min';
+      if (val >= 1000)  return (val / 1000).toFixed(2) + ' s';
+      return Math.round(val) + ' ms';
+    }
+    if (val === Math.floor(val)) return val.toFixed(0);
+    return val.toFixed(2);
+  }
+
+  function renderFeatureGrid(features) {
+    return '<div class="feat-grid">' +
+      Object.entries(FEAT_LABELS).map(([key, label]) => {
+        const val = features[key];
+        return `<div>
+          <div class="feat-item-label">${label}</div>
+          <div class="feat-item-val">${val != null ? fmtFeature(key, val) : '—'}</div>
+        </div>`;
+      }).join('') +
+      '</div>';
+  }
+
+  function renderAnomalyTable(windows) {
+    if (!windows || windows.length === 0)
+      return '<p style="color:#64748b;padding:0.75rem 0">Sin ventanas de datos.</p>';
+
+    const sorted = [...windows].sort((a, b) => b.score - a.score);
+
+    const rows = sorted.map((w, i) => {
+      const isAnom     = w.is_anomaly;
+      const scoreColor = isAnom ? '#f87171' : '#64748b';
+      const scorePct   = Math.min(100, Math.round(w.score * 100));
+      const time       = w.window_start ? fmtDate(w.window_start) : '—';
+      return `
+        <tr class="${isAnom ? 'anom-row' : ''}" data-anom-idx="${i}"
+            title="Clic para ver detalles de la ventana">
+          <td style="color:#94a3b8;font-size:0.78rem;white-space:nowrap">${escapeHtml(time)}</td>
+          <td>
+            <div class="score-bar-wrap">
+              <div class="score-bar-bg">
+                <div class="score-bar-fill" style="width:${scorePct}%;background:${scoreColor}"></div>
+              </div>
+              <span style="font-family:monospace;font-size:0.82rem;color:${scoreColor}">${w.score.toFixed(4)}</span>
+            </div>
+          </td>
+          <td><span class="anom-badge ${isAnom ? 'anomaly' : 'normal'}">${isAnom ? 'Anomalía' : 'Normal'}</span></td>
+        </tr>
+        <tr class="feat-detail-row" id="anom-detail-${i}">
+          <td colspan="3">${renderFeatureGrid(w.features)}</td>
+        </tr>`;
+    }).join('');
+
+    return `
+      <table>
+        <thead>
+          <tr>
+            <th>Ventana (inicio)</th>
+            <th>Score</th>
+            <th>Estado</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  function renderAnomalySummary(data) {
+    const n   = data.n_anomalies;
+    const pct = data.n_windows > 0 ? (n / data.n_windows * 100).toFixed(1) : '0.0';
+    return `
+      <div class="anom-summary">
+        <div class="anom-stat">
+          <div class="anom-stat-label">Ventanas analizadas</div>
+          <div class="anom-stat-value">${data.n_windows}</div>
+        </div>
+        <div class="anom-stat">
+          <div class="anom-stat-label">Anomalías detectadas</div>
+          <div class="anom-stat-value" style="color:${n > 0 ? '#f87171' : '#34d399'}">
+            ${n}
+            <span style="font-size:0.9rem;font-weight:400;color:#64748b"> (${pct}%)</span>
+          </div>
+        </div>
+        <div class="anom-stat">
+          <div class="anom-stat-label">Umbral del modelo</div>
+          <div class="anom-stat-value anom-stat-mono">${data.threshold.toFixed(4)}</div>
+        </div>
+        <div class="anom-stat" style="flex:2">
+          <div class="anom-stat-label">Modelo entrenado</div>
+          <div class="anom-stat-small">${fmtDate(data.model_trained_at)}</div>
+        </div>
+      </div>`;
+  }
+
+  async function loadAnomalies(deviceId) {
+    const content = document.getElementById('anom-content');
+    if (!content) return;
+    content.innerHTML = '<p style="color:#64748b;padding:0.75rem 0">Cargando…</p>';
+
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/anomalies`);
+
+      if (res.status === 409) {
+        content.innerHTML = `
+          <p style="color:#fbbf24;padding:0.75rem 0">
+            Este dispositivo no tiene modelo entrenado.<br>
+            Entrená el dispositivo desde el panel <strong>🧠 Entrenamiento</strong> primero.
+          </p>`;
+        return;
+      }
+      if (!res.ok) {
+        content.innerHTML = '<p style="color:#f87171;padding:0.75rem 0">Error al cargar anomalías.</p>';
+        return;
+      }
+
+      const data = await res.json();
+      content.innerHTML =
+        renderAnomalySummary(data) +
+        '<div id="anom-table-wrap">' + renderAnomalyTable(data.windows) + '</div>';
+
+      content.querySelectorAll('tr[data-anom-idx]').forEach(row => {
+        row.addEventListener('click', () => {
+          const det = document.getElementById(`anom-detail-${row.dataset.anomIdx}`);
+          if (det) det.classList.toggle('open');
+        });
+      });
+    } catch {
+      content.innerHTML = '<p style="color:#f87171;padding:0.75rem 0">Error de conexión.</p>';
+    }
+  }
+
+  async function openAnomalies() {
+    document.getElementById('modal-title').textContent = 'Anomalías de detección';
+    document.getElementById('modal').classList.add('wide');
+    document.getElementById('modal-body').innerHTML = `
+      <div class="anom-device-sel-wrap">
+        <select id="anom-device-sel" class="anom-device-sel">
+          <option value="">Cargando dispositivos…</option>
+        </select>
+        <button id="anom-refresh-btn" class="anom-refresh-btn">↺ Actualizar</button>
+      </div>
+      <div id="anom-content">
+        <p style="color:#64748b;padding:0.75rem 0">Seleccioná un dispositivo para ver sus anomalías.</p>
+      </div>`;
+    document.getElementById('overlay').classList.add('open');
+
+    document.getElementById('anom-refresh-btn').addEventListener('click', () => {
+      const sel = document.getElementById('anom-device-sel');
+      if (sel && sel.value) loadAnomalies(parseInt(sel.value, 10));
+    });
+
+    try {
+      const res     = await fetch('/api/training/status');
+      const data    = await res.json();
+      const trained = data.filter(d => d.status === 'trained');
+      const sel     = document.getElementById('anom-device-sel');
+      if (!sel) return;
+
+      if (trained.length === 0) {
+        sel.innerHTML = '<option value="">Sin dispositivos entrenados</option>';
+        document.getElementById('anom-content').innerHTML = `
+          <p style="color:#64748b;padding:0.75rem 0">
+            No hay dispositivos con modelo entrenado todavía.<br>
+            Entrená uno desde el panel <strong>🧠 Entrenamiento</strong>.
+          </p>`;
+        return;
+      }
+
+      sel.innerHTML =
+        '<option value="">— Elegí un dispositivo —</option>' +
+        trained.map(d => {
+          const lbl = [d.ip, d.hostname].filter(Boolean).join(' / ');
+          return `<option value="${d.device_id}">${escapeHtml(lbl)} (${d.n_windows} ventanas)</option>`;
+        }).join('');
+
+      sel.addEventListener('change', () => {
+        if (sel.value) loadAnomalies(parseInt(sel.value, 10));
+        else {
+          const c = document.getElementById('anom-content');
+          if (c) c.innerHTML = '<p style="color:#64748b;padding:0.75rem 0">Seleccioná un dispositivo para ver sus anomalías.</p>';
+        }
+      });
+
+      // Auto-cargar si solo hay uno entrenado
+      if (trained.length === 1) {
+        sel.value = trained[0].device_id;
+        loadAnomalies(trained[0].device_id);
+      }
+    } catch {
+      const sel = document.getElementById('anom-device-sel');
+      if (sel) sel.innerHTML = '<option value="">Error al cargar dispositivos</option>';
+    }
+  }
+
+  document.getElementById('anomalies-btn').addEventListener('click', openAnomalies);
   document.getElementById('alerts-btn').addEventListener('click', openAlerts);
   document.getElementById('training-btn').addEventListener('click', openTraining);
 
