@@ -5,6 +5,7 @@ from datetime import datetime, UTC
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -302,6 +303,35 @@ def device_anomalies(device_id: int):
     if "error" in result:
         raise HTTPException(status_code=409, detail=result["error"])
     return result
+
+
+class TrainSelectedBody(BaseModel):
+    device_ids: list[int]
+
+
+@app.post("/api/training/train-selected")
+def train_selected(body: TrainSelectedBody):
+    """
+    Entrena el Isolation Forest para una selección de dispositivos.
+    Recibe {"device_ids": [1, 2, 3]}.
+    Retorna resultado por dispositivo (ok / razón del fallo).
+    """
+    conn = get_db()
+    results = []
+    for device_id in body.device_ids:
+        if conn.execute(
+            "SELECT id FROM devices WHERE id = ?", (device_id,)
+        ).fetchone() is None:
+            results.append({
+                "device_id": device_id,
+                "ok": False,
+                "reason": "device not found",
+            })
+            continue
+        results.append(train_device(device_id, conn=conn))
+    trained = [r for r in results if r.get("ok")]
+    skipped = [r for r in results if not r.get("ok")]
+    return {"trained": len(trained), "skipped": len(skipped), "results": results}
 
 
 @app.get("/api/training/status")

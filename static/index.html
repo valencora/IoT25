@@ -310,6 +310,83 @@
     .event-detail { color: #94a3b8; }
 
     #empty { text-align: center; padding: 3rem; color: #475569; }
+
+    /* ── Training panel ────────────────────────────────────────────────── */
+    #training-btn {
+      background: #2d3148;
+      border: 1px solid #3d4258;
+      color: #e2e8f0;
+      padding: 0.5rem 0.85rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.875rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: background 0.15s;
+    }
+    #training-btn:hover { background: #3d4258; }
+
+    .train-status {
+      display: inline-block;
+      padding: 0.15rem 0.55rem;
+      border-radius: 999px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .train-status.pending  { background: #1e293b; color: #64748b; }
+    .train-status.ready    { background: #1e3a8a; color: #93c5fd; }
+    .train-status.trained  { background: #052e16; color: #86efac; }
+    .train-status.excluded { background: #1a1d2e; color: #374151; }
+
+    .train-actions {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      flex-wrap: wrap;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid #2d3148;
+      margin-bottom: 0.75rem;
+    }
+
+    .train-btn {
+      background: #1e3a8a;
+      border: none;
+      color: #bfdbfe;
+      padding: 0.4rem 0.85rem;
+      border-radius: 5px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s;
+    }
+    .train-btn:hover:not(:disabled) { background: #2563eb; color: #fff; }
+    .train-btn:disabled { opacity: 0.4; cursor: default; }
+
+    .train-row-btn {
+      background: #1e293b;
+      border: none;
+      color: #94a3b8;
+      padding: 0.25rem 0.65rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s;
+    }
+    .train-row-btn:hover:not(:disabled) { background: #1e3a8a; color: #bfdbfe; }
+    .train-row-btn:disabled { opacity: 0.4; cursor: default; }
+
+    #train-feedback {
+      font-size: 0.8rem;
+      color: #64748b;
+      flex: 1;
+    }
+    #train-feedback.error { color: #f87171; }
+
+    #modal.wide { max-width: 860px; }
   </style>
 </head>
 <body>
@@ -317,6 +394,9 @@
 <header>
   <h1>IoT25 — Monitor de Red</h1>
   <div class="header-right">
+    <button id="training-btn" type="button" title="Gestionar entrenamiento de modelos">
+      🧠 Entrenamiento
+    </button>
     <button id="alerts-btn" type="button" title="Ver alertas activas">
       🔔 Alertas <span id="alerts-count" class="zero">0</span>
     </button>
@@ -532,13 +612,7 @@
       `).join('');
   }
 
-  document.getElementById('modal-close').addEventListener('click', () =>
-    document.getElementById('overlay').classList.remove('open')
-  );
-  document.getElementById('overlay').addEventListener('click', e => {
-    if (e.target === document.getElementById('overlay'))
-      document.getElementById('overlay').classList.remove('open');
-  });
+  // (modal-close y overlay-click se manejan en la sección de training más abajo)
 
   function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({
@@ -696,7 +770,218 @@
     await renderAlerts();
   }
 
+  // ── Training panel ────────────────────────────────────────────────────────
+
+  const TRAIN_STATUS_LABELS = {
+    pending:  'Pendiente',
+    ready:    'Listo',
+    trained:  'Entrenado',
+    excluded: 'Excluido',
+  };
+
+  function setTrainFeedback(msg, isError = false) {
+    const el = document.getElementById('train-feedback');
+    if (!el) return;
+    el.textContent = msg;
+    el.className = isError ? 'error' : '';
+  }
+
+  function updateSelCount() {
+    const count = document.querySelectorAll('.train-cb:checked').length;
+    const btn   = document.getElementById('train-sel-btn');
+    if (!btn) return;
+    btn.disabled = count === 0;
+    btn.textContent = `Entrenar seleccionados (${count})`;
+  }
+
+  function renderTrainingRow(d) {
+    const status    = d.status ?? 'pending';
+    const canTrain  = status === 'ready' || status === 'trained';
+    const label     = TRAIN_STATUS_LABELS[status] ?? status;
+    const trainedAt = d.training_date
+      ? `<span style="color:#64748b;font-size:0.73rem;display:block;margin-top:0.15rem">${fmtDate(d.training_date)}</span>`
+      : '';
+    return `
+      <tr id="train-row-${d.device_id}">
+        <td style="text-align:center;width:2.5rem">
+          <input type="checkbox" class="train-cb" id="train-cb-${d.device_id}"
+                 data-id="${d.device_id}" ${canTrain ? '' : 'disabled'}>
+        </td>
+        <td>
+          <span class="ip">${escapeHtml(d.ip ?? '—')}</span>
+          ${d.hostname ? `<span style="color:#64748b;font-size:0.8rem"> / ${escapeHtml(d.hostname)}</span>` : ''}
+        </td>
+        <td style="text-align:right">${d.n_windows ?? 0}</td>
+        <td>
+          <span class="train-status ${escapeHtml(status)}">${escapeHtml(label)}</span>
+          ${trainedAt}
+        </td>
+        <td>
+          <button class="train-row-btn" data-id="${d.device_id}" ${canTrain ? '' : 'disabled'}>
+            ${status === 'trained' ? 'Reentrenar' : 'Entrenar'}
+          </button>
+        </td>
+      </tr>`;
+  }
+
+  function renderTrainingTable(data) {
+    const wrap = document.getElementById('training-table-wrap');
+    if (!wrap) return;
+    if (!data || data.length === 0) {
+      wrap.innerHTML = '<p style="color:#64748b;padding:0.75rem 0">Sin dispositivos registrados.</p>';
+      return;
+    }
+    wrap.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th style="width:2.5rem;text-align:center">
+              <input type="checkbox" id="train-check-all" title="Seleccionar todos los entrenables">
+            </th>
+            <th>IP / Hostname</th>
+            <th style="text-align:right">Ventanas</th>
+            <th>Estado</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="training-tbody">
+          ${data.map(renderTrainingRow).join('')}
+        </tbody>
+      </table>`;
+
+    document.getElementById('train-check-all').addEventListener('change', e => {
+      document.querySelectorAll('.train-cb:not(:disabled)').forEach(cb => {
+        cb.checked = e.target.checked;
+      });
+      updateSelCount();
+    });
+
+    document.querySelectorAll('.train-cb').forEach(cb => {
+      cb.addEventListener('change', updateSelCount);
+    });
+
+    document.querySelectorAll('.train-row-btn').forEach(btn => {
+      btn.addEventListener('click', () => trainOneDevice(parseInt(btn.dataset.id, 10)));
+    });
+  }
+
+  async function loadTrainingStatus() {
+    const wrap = document.getElementById('training-table-wrap');
+    if (!wrap) return;
+    try {
+      const res  = await fetch('/api/training/status');
+      const data = await res.json();
+      renderTrainingTable(data);
+    } catch {
+      wrap.innerHTML = '<p style="color:#f87171;padding:0.75rem 0">Error al cargar el estado.</p>';
+    }
+  }
+
+  function setTrainingBusy(busy) {
+    document.querySelectorAll('.train-btn, .train-row-btn').forEach(b => {
+      b.disabled = busy;
+    });
+    if (!busy) updateSelCount();
+  }
+
+  async function trainOneDevice(id) {
+    const row       = document.getElementById(`train-row-${id}`);
+    const rowBtn    = row ? row.querySelector('.train-row-btn') : null;
+    const statusEl  = row ? row.querySelector('.train-status') : null;
+
+    if (rowBtn) { rowBtn.disabled = true; rowBtn.textContent = 'Entrenando…'; }
+    setTrainFeedback('Entrenando…');
+
+    try {
+      const res  = await fetch(`/api/devices/${id}/train`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        if (rowBtn)   { rowBtn.disabled = false; rowBtn.textContent = 'Reentrenar'; }
+        if (statusEl) { statusEl.className = 'train-status trained'; statusEl.textContent = 'Entrenado'; }
+        setTrainFeedback(
+          `Dispositivo ${id}: ${data.n_samples} ventanas, umbral ${data.threshold?.toFixed(4)}.`
+        );
+      } else {
+        if (rowBtn)  { rowBtn.disabled = false; rowBtn.textContent = 'Entrenar'; }
+        setTrainFeedback(`Error: ${data.detail ?? 'desconocido'}`, true);
+      }
+    } catch {
+      if (rowBtn) { rowBtn.disabled = false; rowBtn.textContent = 'Entrenar'; }
+      setTrainFeedback('Error de conexión.', true);
+    }
+  }
+
+  async function trainAll() {
+    setTrainingBusy(true);
+    setTrainFeedback('Entrenando todos los dispositivos listos…');
+    try {
+      const res  = await fetch('/api/training/train', { method: 'POST' });
+      const data = await res.json();
+      setTrainFeedback(`${data.trained} entrenado(s), ${data.skipped} omitido(s).`);
+      await loadTrainingStatus();
+    } catch {
+      setTrainFeedback('Error de conexión.', true);
+    } finally {
+      setTrainingBusy(false);
+    }
+  }
+
+  async function trainSelected() {
+    const ids = [...document.querySelectorAll('.train-cb:checked')]
+      .map(cb => parseInt(cb.dataset.id, 10));
+    if (ids.length === 0) return;
+
+    setTrainingBusy(true);
+    setTrainFeedback(`Entrenando ${ids.length} dispositivo(s) seleccionado(s)…`);
+    try {
+      const res  = await fetch('/api/training/train-selected', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ device_ids: ids }),
+      });
+      const data = await res.json();
+      setTrainFeedback(`${data.trained} entrenado(s), ${data.skipped} omitido(s).`);
+      await loadTrainingStatus();
+    } catch {
+      setTrainFeedback('Error de conexión.', true);
+    } finally {
+      setTrainingBusy(false);
+    }
+  }
+
+  function openTraining() {
+    document.getElementById('modal-title').textContent = 'Entrenamiento de modelos';
+    document.getElementById('modal').classList.add('wide');
+    document.getElementById('modal-body').innerHTML = `
+      <div class="train-actions">
+        <button id="train-all-btn" class="train-btn">Entrenar todos</button>
+        <button id="train-sel-btn" class="train-btn" disabled>Entrenar seleccionados (0)</button>
+        <span id="train-feedback"></span>
+      </div>
+      <div id="training-table-wrap">
+        <p style="color:#64748b;padding:0.75rem 0">Cargando…</p>
+      </div>`;
+    document.getElementById('overlay').classList.add('open');
+
+    document.getElementById('train-all-btn').addEventListener('click', trainAll);
+    document.getElementById('train-sel-btn').addEventListener('click', trainSelected);
+
+    loadTrainingStatus();
+  }
+
+  // Limpiar clase wide al cerrar el modal (cualquier vía)
+  function closeModal() {
+    document.getElementById('overlay').classList.remove('open');
+    document.getElementById('modal').classList.remove('wide');
+  }
+
+  document.getElementById('modal-close').addEventListener('click', closeModal);
+  document.getElementById('overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('overlay')) closeModal();
+  });
+
   document.getElementById('alerts-btn').addEventListener('click', openAlerts);
+  document.getElementById('training-btn').addEventListener('click', openTraining);
 
   loadDevices();
   refreshAlertsCount();
