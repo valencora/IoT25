@@ -28,7 +28,7 @@ El modelo NO usa scikit-learn ni numpy; solo river y pickle de la stdlib.
 import logging
 import pickle
 import threading
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta, timezone
 from pathlib import Path
 from sqlite3 import Connection
 
@@ -540,8 +540,14 @@ def _build_anomaly_message(
     ts_str = ""
     if window_start:
         try:
-            dt = datetime.fromisoformat(window_start.replace("Z", "+00:00"))
-            ts_str = f" el {dt.strftime('%d/%m/%Y')} a las {dt.strftime('%H:%M')}"
+            dt_utc = datetime.fromisoformat(window_start.replace("Z", "+00:00"))
+            # Convertir a hora local de Argentina (UTC-3).
+            # Se usa offset fijo porque:
+            #   a) Argentina no tiene horario de verano (IANA: America/Argentina/Buenos_Aires).
+            #   b) zoneinfo requiere tzdata instalado, no disponible de forma garantizada en OpenWrt.
+            _AR = timezone(timedelta(hours=-3))
+            dt_ar = dt_utc.astimezone(_AR)
+            ts_str = f" el {dt_ar.strftime('%d/%m/%Y')} a las {dt_ar.strftime('%H:%M')}"
         except Exception:
             pass
 
