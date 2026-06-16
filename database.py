@@ -58,6 +58,7 @@ def init_db() -> None:
             recommendations  TEXT,   -- JSON
             timestamp        TEXT NOT NULL,  -- fecha/hora del evento (puede ser antigua)
             created_at       TEXT,            -- fecha/hora de registro en BD (siempre now)
+            dedup_key        TEXT,            -- clave de deduplicación permanente (anomalías por ventana)
             acknowledged     INTEGER NOT NULL DEFAULT 0,
             resolved         INTEGER NOT NULL DEFAULT 0,
             category         TEXT NOT NULL DEFAULT 'unclassified'
@@ -145,6 +146,11 @@ def init_db() -> None:
         cursor.execute("ALTER TABLE alerts ADD COLUMN created_at TEXT")
         # Backfill: las alertas antiguas usan su timestamp como fecha de registro.
         cursor.execute("UPDATE alerts SET created_at = timestamp WHERE created_at IS NULL")
+    if "dedup_key" not in existing:
+        cursor.execute("ALTER TABLE alerts ADD COLUMN dedup_key TEXT")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alerts_dedup_key ON alerts(dedup_key)"
+        )
 
     conn.commit()
 

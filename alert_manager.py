@@ -14,53 +14,73 @@ def create_alert(
     message: str,
     technical_detail: dict | None = None,
     event_time: datetime | None = None,
+    dedup_key: str | None = None,
 ) -> int | None:
     """
-    Insert an alert. Returns the new id, or None if a duplicate exists in the
-    last 10 minutes for the same device_id + alert_type pair.
+    Inserta una alerta y devuelve el nuevo id, o None si es duplicado.
 
-    event_time — fecha/hora del evento que disparó la alerta (p.ej. window_start
-                 en anomalías). Si se omite, se usa datetime.now(UTC).
-                 El campo ``timestamp`` de la alerta refleja esta fecha, mientras
-                 que ``created_at`` siempre registra el momento de inserción en BD.
-                 El anti-duplicados usa ``created_at`` para no verse afectado por
-                 alertas de eventos pasados.
+    Hay dos modos de deduplicación según si se provee ``dedup_key``:
+
+    1. Deduplicación por clave permanente (dedup_key != None):
+       Si ya existe cualquier alerta con ese dedup_key, se descarta.
+       Útil para anomalías por ventana: mismo window_start → misma clave
+       → nunca se duplica, sin importar cuántas veces corra el scanner.
+
+    2. Deduplicación por tiempo (dedup_key is None, comportamiento original):
+       Si existe una alerta con mismo device_id + type en los últimos 10 min,
+       se descarta. Usado por alertas de dispositivo nuevo, DNS, TLS, etc.
+
+    event_time — fecha/hora del evento (p.ej. window_start en anomalías).
+                 Si se omite, se usa datetime.now(UTC).
+                 ``timestamp`` refleja el evento; ``created_at`` siempre = now.
     """
     conn = get_db()
     now = datetime.now(UTC)
-    cutoff = (now - timedelta(minutes=10)).isoformat()
 
-    # Anti-duplicados basado en created_at (hora de registro), no en timestamp
-    # (hora del evento), para que alertas de ventanas antiguas no bloqueen el
-    # deduplicador de los próximos 10 minutos.
-    duplicate = conn.execute(
-        """
-        SELECT id FROM alerts
-        WHERE device_id = ? AND type = ?
-          AND (created_at >= ? OR (created_at IS NULL AND timestamp >= ?))
-        LIMIT 1
-        """,
-        (device_id, alert_type, cutoff, cutoff),
-    ).fetchone()
+    if dedup_key is not None:
+        # Modo 1: deduplicación permanente por clave de ventana.
+        existing = conn.execute(
+            "SELECT id FROM alerts WHERE dedup_key = ? LIMIT 1",
+            (dedup_key,),
+        ).fetchone()
+        if existing:
+            logger.debug(
+                "Alert skipped (dedup_key exists) device_id=%s type=%s key=%s",
+                device_id, alert_type, dedup_key,
+            )
+            return None
+    else:
+        # Modo 2: deduplicación por tiempo (alertas no-anomalía).
+        cutoff = (now - timedelta(minutes=10)).isoformat()
+        duplicate = conn.execute(
+            """
+            SELECT id FROM alerts
+            WHERE device_id = ? AND type = ?
+              AND (created_at >= ? OR (created_at IS NULL AND timestamp >= ?))
+            LIMIT 1
+            """,
+            (device_id, alert_type, cutoff, cutoff),
+        ).fetchone()
+        if duplicate:
+            logger.debug(
+                "Alert skipped (duplicate within 10 min) device_id=%s type=%s",
+                device_id, alert_type,
+            )
+            return None
 
-    if duplicate:
-        logger.debug(
-            "Alert skipped (duplicate within 10 min) device_id=%s type=%s",
-            device_id, alert_type,
-        )
-        return None
-
-    now_iso        = now.isoformat()
-    timestamp_val  = event_time.isoformat() if event_time else now_iso
-    detail_json    = json.dumps(technical_detail) if technical_detail else None
+    now_iso       = now.isoformat()
+    timestamp_val = event_time.isoformat() if event_time else now_iso
+    detail_json   = json.dumps(technical_detail) if technical_detail else None
 
     cur = conn.execute(
         """
         INSERT INTO alerts
-            (device_id, type, severity, message, technical_detail, timestamp, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (device_id, type, severity, message, technical_detail,
+             timestamp, created_at, dedup_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (device_id, alert_type, severity, message, detail_json, timestamp_val, now_iso),
+        (device_id, alert_type, severity, message, detail_json,
+         timestamp_val, now_iso, dedup_key),
     )
     conn.commit()
     logger.info(

@@ -606,17 +606,19 @@ def _anomaly_severity(score: float, threshold: float) -> str:
 
 def generate_anomaly_alerts(device_id: int, conn: Connection | None = None) -> int:
     """
-    Puntúa todas las ventanas del dispositivo y crea una alerta por cada
-    ventana anómala detectada.
+    Puntúa todas las ventanas del dispositivo y crea UNA alerta por cada
+    ventana anómala distinta, identificada por su window_start.
 
-    El anti-duplicados de create_alert (10 min por device_id + type) filtra
-    automáticamente las repeticiones: en una pasada con 22 ventanas anómalas
-    solo pasa la primera de cada tipo en los últimos 10 minutos.
+    Deduplicación permanente por ventana:
+      dedup_key = "anomaly_iforest:{device_id}:{window_start}"
+      Si ya existe una alerta con ese key, la ventana se salta (no importa
+      cuándo fue ni cuántas veces vuelva a correr el scanner).
+      Dos ventanas distintas → dos alertas. Misma ventana re-procesada → 0 nuevas.
 
-    Las ventanas se procesan de mayor a menor score para que la primera alerta
-    —la que pasa el filtro de duplicados— corresponda a la anomalía más grave.
+    Las ventanas se procesan de mayor a menor score para que el log refleje
+    las anomalías más graves primero.
 
-    Retorna el número de alertas efectivamente insertadas.
+    Retorna el número de alertas efectivamente insertadas en esta pasada.
     """
     if conn is None:
         conn = get_db()
@@ -684,6 +686,7 @@ def generate_anomaly_alerts(device_id: int, conn: Connection | None = None) -> i
                 "features":     w["features"],
             },
             event_time       = evt,
+            dedup_key        = f"anomaly_iforest:{device_id}:{w.get('window_start', '')}",
         )
         if alert_id is not None:
             n_created += 1
