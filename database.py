@@ -56,7 +56,8 @@ def init_db() -> None:
             technical_detail TEXT,   -- JSON
             metadata         TEXT,   -- JSON
             recommendations  TEXT,   -- JSON
-            timestamp        TEXT NOT NULL,
+            timestamp        TEXT NOT NULL,  -- fecha/hora del evento (puede ser antigua)
+            created_at       TEXT,            -- fecha/hora de registro en BD (siempre now)
             acknowledged     INTEGER NOT NULL DEFAULT 0,
             resolved         INTEGER NOT NULL DEFAULT 0,
             category         TEXT NOT NULL DEFAULT 'unclassified'
@@ -140,6 +141,10 @@ def init_db() -> None:
         cursor.execute(
             "ALTER TABLE alerts ADD COLUMN category TEXT NOT NULL DEFAULT 'unclassified'"
         )
+    if "created_at" not in existing:
+        cursor.execute("ALTER TABLE alerts ADD COLUMN created_at TEXT")
+        # Backfill: las alertas antiguas usan su timestamp como fecha de registro.
+        cursor.execute("UPDATE alerts SET created_at = timestamp WHERE created_at IS NULL")
 
     conn.commit()
 

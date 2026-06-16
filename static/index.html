@@ -496,6 +496,59 @@
     .score-bar-wrap { display: flex; align-items: center; gap: 0.4rem; }
     .score-bar-bg   { background: #2d3148; border-radius: 2px; width: 48px; height: 5px; overflow: hidden; flex-shrink: 0; }
     .score-bar-fill { height: 100%; border-radius: 2px; }
+
+    /* Sortable headers (MEJORA 2) */
+    th.sort-th { cursor: pointer; user-select: none; white-space: nowrap; }
+    th.sort-th:hover { color: #a78bfa; }
+    .sort-arrow { color: #3d4258; font-size: 0.7rem; margin-left: 0.3rem; transition: color 0.15s; }
+    th.sort-th.sort-active .sort-arrow { color: #a78bfa; }
+
+    /* Filter bar above devices table (MEJORA 3) */
+    #device-filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.6rem 0 0.5rem;
+    }
+    #device-filter-bar span { font-size: 0.78rem; color: #64748b; }
+    .filter-btn {
+      background: #2d3148;
+      border: 1px solid #3d4258;
+      color: #94a3b8;
+      padding: 0.28rem 0.7rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.75rem;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .filter-btn:hover { background: #3d4258; }
+    .filter-btn.filter-on { background: #1e3a8a; border-color: #3b82f6; color: #bfdbfe; }
+
+    /* Anomaly badge in device rows (MEJORA 4) */
+    .dev-anom-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      background: #422006;
+      color: #fb923c;
+      padding: 0.13rem 0.45rem;
+      border-radius: 999px;
+      font-size: 0.67rem;
+      font-weight: 700;
+    }
+    .dismiss-anom-btn {
+      background: none;
+      border: 1px solid #3d4258;
+      color: #64748b;
+      padding: 0.18rem 0.5rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.68rem;
+      margin-left: 0.35rem;
+      white-space: nowrap;
+      transition: background 0.15s, color 0.15s;
+    }
+    .dismiss-anom-btn:hover { background: #1e293b; color: #e2e8f0; }
   </style>
 </head>
 <body>
@@ -532,6 +585,11 @@
     </div>
   </div>
 
+  <div id="device-filter-bar">
+    <span>Mostrar:</span>
+    <button class="filter-btn" id="filter-active-btn">Solo activos</button>
+  </div>
+
   <table>
     <thead>
       <tr>
@@ -542,10 +600,11 @@
         <th>Tipo</th>
         <th>Estado</th>
         <th>Último visto</th>
+        <th>Anomalía</th>
       </tr>
     </thead>
     <tbody id="devices-body">
-      <tr><td colspan="7" id="empty">Cargando…</td></tr>
+      <tr><td colspan="8" id="empty">Cargando…</td></tr>
     </tbody>
   </table>
 </main>
@@ -584,32 +643,42 @@
     return new Date(iso).toLocaleString('es-AR');
   }
 
-  async function loadDevices() {
-    const res = await fetch('/api/devices');
-    const devices = await res.json();
+  let _allDevices = [];
+  let _filterActiveOnly = false;
+  let _anomDeviceIds = new Set();  // device_ids con alertas de anomalía activas
 
-    document.getElementById('count-total').textContent   = devices.length;
-    document.getElementById('count-active').textContent  = devices.filter(d => d.status === 'active').length;
-    document.getElementById('count-offline').textContent = devices.filter(d => d.status === 'offline').length;
-
+  function renderDeviceTable() {
     const tbody = document.getElementById('devices-body');
+    const list  = _filterActiveOnly
+      ? _allDevices.filter(d => d.status === 'active')
+      : _allDevices;
 
-    if (devices.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" id="empty">Sin dispositivos detectados aún.</td></tr>';
+    if (list.length === 0) {
+      const msg = _filterActiveOnly
+        ? 'No hay dispositivos activos en este momento.'
+        : 'Sin dispositivos detectados aún.';
+      tbody.innerHTML = `<tr><td colspan="8" id="empty">${msg}</td></tr>`;
       return;
     }
 
-    tbody.innerHTML = devices.map(d => `
-      <tr data-mac="${d.mac}" data-id="${d.id}">
-        <td class="mac">${d.mac}</td>
-        <td class="ip">${d.ip ?? '—'}</td>
-        <td>${d.hostname ?? '—'}</td>
-        <td>${d.vendor ?? '—'}</td>
-        <td>${d.device_type ?? '—'}</td>
-        <td><span class="badge ${d.status}">${d.status}</span></td>
-        <td>${fmtDate(d.last_seen)}</td>
-      </tr>
-    `).join('');
+    tbody.innerHTML = list.map(d => {
+      const hasAnom = _anomDeviceIds.has(d.id);
+      const anomCell = hasAnom
+        ? `<span class="dev-anom-badge">⚠ Sin revisar</span>
+           <button class="dismiss-anom-btn" data-dev-id="${d.id}">Revisado ✓</button>`
+        : '—';
+      return `
+        <tr data-mac="${escapeHtml(d.mac)}" data-id="${d.id}">
+          <td class="mac">${escapeHtml(d.mac)}</td>
+          <td class="ip">${escapeHtml(d.ip ?? '—')}</td>
+          <td>${escapeHtml(d.hostname ?? '—')}</td>
+          <td>${escapeHtml(d.vendor ?? '—')}</td>
+          <td>${escapeHtml(d.device_type ?? '—')}</td>
+          <td><span class="badge ${escapeHtml(d.status)}">${escapeHtml(d.status)}</span></td>
+          <td style="white-space:nowrap">${fmtDate(d.last_seen)}</td>
+          <td style="white-space:nowrap">${anomCell}</td>
+        </tr>`;
+    }).join('');
 
     tbody.querySelectorAll('tr[data-mac]').forEach(row => {
       row.addEventListener('click', () =>
@@ -617,9 +686,56 @@
       );
     });
 
+    tbody.querySelectorAll('button.dismiss-anom-btn').forEach(btn => {
+      btn.addEventListener('click', async e => {
+        e.stopPropagation();
+        const devId = parseInt(btn.dataset.devId, 10);
+        btn.disabled = true;
+        btn.textContent = 'Marcando…';
+        try {
+          await fetch(`/api/devices/${devId}/dismiss-anomalies`, { method: 'POST' });
+          _anomDeviceIds.delete(devId);
+          renderDeviceTable();
+          refreshAlertsCount();
+        } catch {
+          btn.disabled = false;
+          btn.textContent = 'Reintentar';
+        }
+      });
+    });
+  }
+
+  async function loadDevices() {
+    const [devRes, alertRes] = await Promise.all([
+      fetch('/api/devices'),
+      fetch('/api/alerts/active'),
+    ]);
+    _allDevices = await devRes.json();
+    const activeAlerts = await alertRes.json().catch(() => []);
+
+    _anomDeviceIds = new Set(
+      activeAlerts
+        .filter(a => a.type === 'anomaly_iforest')
+        .map(a => a.device_id)
+    );
+
+    document.getElementById('count-total').textContent   = _allDevices.length;
+    document.getElementById('count-active').textContent  = _allDevices.filter(d => d.status === 'active').length;
+    document.getElementById('count-offline').textContent = _allDevices.filter(d => d.status === 'offline').length;
+
+    renderDeviceTable();
+
     document.getElementById('refresh-info').textContent =
       'Última actualización: ' + new Date().toLocaleTimeString('es-AR');
   }
+
+  document.getElementById('filter-active-btn').addEventListener('click', () => {
+    _filterActiveOnly = !_filterActiveOnly;
+    const btn = document.getElementById('filter-active-btn');
+    btn.classList.toggle('filter-on', _filterActiveOnly);
+    btn.textContent = _filterActiveOnly ? 'Todos' : 'Solo activos';
+    renderDeviceTable();
+  });
 
   let _deviceTab = 'events';
   let _currentDeviceMac = null;
@@ -1136,11 +1252,39 @@
       '</div>';
   }
 
+  let _anomSort = { col: 'score', asc: false };
+  let _anomWindows = null;
+
+  function sortedAnomalyWindows(windows) {
+    return [...windows].sort((a, b) => {
+      let va, vb;
+      if (_anomSort.col === 'date') {
+        va = a.window_start ?? '';
+        vb = b.window_start ?? '';
+      } else if (_anomSort.col === 'status') {
+        va = a.is_anomaly ? 1 : 0;
+        vb = b.is_anomaly ? 1 : 0;
+      } else {
+        va = a.score;
+        vb = b.score;
+      }
+      if (va < vb) return _anomSort.asc ? -1 : 1;
+      if (va > vb) return _anomSort.asc ? 1 : -1;
+      return 0;
+    });
+  }
+
+  function anomSortArrow(col) {
+    const active = _anomSort.col === col;
+    const arrow  = active ? (_anomSort.asc ? '↑' : '↓') : '↕';
+    return `<span class="sort-arrow">${arrow}</span>`;
+  }
+
   function renderAnomalyTable(windows) {
     if (!windows || windows.length === 0)
       return '<p style="color:#64748b;padding:0.75rem 0">Sin ventanas de datos.</p>';
 
-    const sorted = [...windows].sort((a, b) => b.score - a.score);
+    const sorted = sortedAnomalyWindows(windows);
 
     const rows = sorted.map((w, i) => {
       const isAnom     = w.is_anomaly;
@@ -1166,17 +1310,49 @@
         </tr>`;
     }).join('');
 
+    const activeCol = _anomSort.col;
     return `
       <table>
         <thead>
           <tr>
-            <th>Ventana (inicio)</th>
-            <th>Score</th>
-            <th>Estado</th>
+            <th class="sort-th ${activeCol === 'date' ? 'sort-active' : ''}" data-sort-col="date">
+              Ventana (inicio)${anomSortArrow('date')}
+            </th>
+            <th class="sort-th ${activeCol === 'score' ? 'sort-active' : ''}" data-sort-col="score">
+              Score${anomSortArrow('score')}
+            </th>
+            <th class="sort-th ${activeCol === 'status' ? 'sort-active' : ''}" data-sort-col="status">
+              Estado${anomSortArrow('status')}
+            </th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>`;
+  }
+
+  function bindAnomalyTableHandlers(container) {
+    container.querySelectorAll('th[data-sort-col]').forEach(th => {
+      th.addEventListener('click', () => {
+        const col = th.dataset.sortCol;
+        if (_anomSort.col === col) {
+          _anomSort.asc = !_anomSort.asc;
+        } else {
+          _anomSort.col = col;
+          _anomSort.asc = col === 'date';  // fecha: ascendente por defecto (más antigua primero)
+        }
+        const wrap = document.getElementById('anom-table-wrap');
+        if (wrap && _anomWindows) {
+          wrap.innerHTML = renderAnomalyTable(_anomWindows);
+          bindAnomalyTableHandlers(wrap);
+        }
+      });
+    });
+    container.querySelectorAll('tr[data-anom-idx]').forEach(row => {
+      row.addEventListener('click', () => {
+        const det = document.getElementById(`anom-detail-${row.dataset.anomIdx}`);
+        if (det) det.classList.toggle('open');
+      });
+    });
   }
 
   function renderAnomalySummary(data) {
@@ -1210,6 +1386,7 @@
     const content = document.getElementById('anom-content');
     if (!content) return;
     content.innerHTML = '<p style="color:#64748b;padding:0.75rem 0">Cargando…</p>';
+    _anomWindows = null;
 
     try {
       const res = await fetch(`/api/devices/${deviceId}/anomalies`);
@@ -1228,16 +1405,13 @@
       }
 
       const data = await res.json();
+      _anomWindows = data.windows;
+
       content.innerHTML =
         renderAnomalySummary(data) +
         '<div id="anom-table-wrap">' + renderAnomalyTable(data.windows) + '</div>';
 
-      content.querySelectorAll('tr[data-anom-idx]').forEach(row => {
-        row.addEventListener('click', () => {
-          const det = document.getElementById(`anom-detail-${row.dataset.anomIdx}`);
-          if (det) det.classList.toggle('open');
-        });
-      });
+      bindAnomalyTableHandlers(content);
     } catch {
       content.innerHTML = '<p style="color:#f87171;padding:0.75rem 0">Error de conexión.</p>';
     }

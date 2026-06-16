@@ -663,6 +663,15 @@ def generate_anomaly_alerts(device_id: int, conn: Connection | None = None) -> i
             n_windows    = result["n_windows"],
             severity     = severity,
         )
+        # event_time = inicio de la ventana anómala (puede ser una fecha antigua).
+        # create_alert la usa como timestamp del evento; created_at = now siempre.
+        try:
+            evt = datetime.fromisoformat(
+                w["window_start"].replace("Z", "+00:00")
+            ) if w.get("window_start") else None
+        except (ValueError, AttributeError):
+            evt = None
+
         alert_id = create_alert(
             device_id        = device_id,
             alert_type       = "anomaly_iforest",
@@ -674,6 +683,7 @@ def generate_anomaly_alerts(device_id: int, conn: Connection | None = None) -> i
                 "window_start": w["window_start"],
                 "features":     w["features"],
             },
+            event_time       = evt,
         )
         if alert_id is not None:
             n_created += 1

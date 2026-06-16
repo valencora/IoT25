@@ -316,6 +316,24 @@ def device_anomalies(device_id: int):
     return result
 
 
+@app.post("/api/devices/{device_id}/dismiss-anomalies")
+def dismiss_anomaly_alerts(device_id: int):
+    """
+    Marca como vistas (acknowledged) todas las alertas de anomalía activas
+    del dispositivo. Equivale a "marcar como revisado" en el dashboard.
+    """
+    conn = get_db()
+    if conn.execute("SELECT id FROM devices WHERE id = ?", (device_id,)).fetchone() is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    result = conn.execute(
+        """UPDATE alerts SET acknowledged = 1
+           WHERE device_id = ? AND type = 'anomaly_iforest' AND acknowledged = 0""",
+        (device_id,)
+    )
+    conn.commit()
+    return {"ok": True, "dismissed": result.rowcount}
+
+
 @app.post("/api/devices/{device_id}/scan-anomalies")
 def scan_anomalies(device_id: int):
     """
