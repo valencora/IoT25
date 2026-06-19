@@ -1,7 +1,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, UTC
+from datetime import date as _date, datetime, timedelta, UTC
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -105,8 +105,17 @@ def list_alerts(
     device_id: int | None = None,
     acknowledged: bool | None = None,
     category: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     limit: int = 100,
 ):
+    """
+    Filtra alertas. Parámetros opcionales acumulables:
+      severity, device_id, acknowledged, category — igual que antes.
+      date_from  — fecha mínima del evento (ISO: YYYY-MM-DD o YYYY-MM-DDTHH:MM:SS).
+      date_to    — fecha máxima del evento (inclusive; si es YYYY-MM-DD, incluye
+                   todo ese día hasta las 23:59:59).
+    """
     conn = get_db()
     query = "SELECT * FROM alerts WHERE 1=1"
     params: list = []
@@ -122,6 +131,18 @@ def list_alerts(
     if category is not None:
         query += " AND category = ?"
         params.append(category)
+    if date_from is not None:
+        # "2026-06-16" → timestamp >= "2026-06-16" funciona por comparación de strings ISO.
+        query += " AND timestamp >= ?"
+        params.append(date_from[:10])  # normalizar a YYYY-MM-DD
+    if date_to is not None:
+        # Límite superior exclusivo al día siguiente para incluir todo el día indicado.
+        try:
+            next_day = (_date.fromisoformat(date_to[:10]) + timedelta(days=1)).isoformat()
+        except ValueError:
+            next_day = date_to
+        query += " AND timestamp < ?"
+        params.append(next_day)
     query += " ORDER BY timestamp DESC LIMIT ?"
     params.append(limit)
     rows = conn.execute(query, params).fetchall()

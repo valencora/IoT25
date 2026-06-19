@@ -497,6 +497,45 @@
     .score-bar-bg   { background: #2d3148; border-radius: 2px; width: 48px; height: 5px; overflow: hidden; flex-shrink: 0; }
     .score-bar-fill { height: 100%; border-radius: 2px; }
 
+    /* Filtros del historial de alertas */
+    .history-filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.6rem 0 0.75rem;
+      border-bottom: 1px solid #2d3148;
+      margin-bottom: 0.6rem;
+      flex-wrap: wrap;
+    }
+    .hist-filter-group {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    .hist-filter-group label {
+      font-size: 0.73rem;
+      color: #64748b;
+      white-space: nowrap;
+    }
+    .hist-filter-select,
+    .hist-filter-input {
+      background: #1e2235;
+      border: 1px solid #3d4258;
+      color: #e2e8f0;
+      padding: 0.28rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      color-scheme: dark;
+    }
+    .hist-filter-select:focus,
+    .hist-filter-input:focus { outline: none; border-color: #a78bfa; }
+    .hist-count {
+      font-size: 0.73rem;
+      color: #64748b;
+      margin-left: auto;
+      white-space: nowrap;
+    }
+
     /* Sortable headers (MEJORA 2) */
     th.sort-th { cursor: pointer; user-select: none; white-space: nowrap; }
     th.sort-th:hover { color: #a78bfa; }
@@ -861,6 +900,7 @@
   }
 
   let _alertsTab = 'active';
+  let _histFilter = { device_id: '', date_from: '', date_to: '' };
 
   async function openAlerts() {
     document.getElementById('modal-title').textContent = 'Alertas';
@@ -926,45 +966,107 @@
     if (!list) return;
 
     const isCategoryTab = _alertsTab === 'suspicious' || _alertsTab === 'not_suspicious';
+    const isHistory     = _alertsTab === 'history';
 
+    // Guardar los valores actuales del filtro antes de limpiar el DOM
+    if (isHistory) {
+      const devSel   = document.getElementById('hist-device');
+      const dateFrom = document.getElementById('hist-date-from');
+      const dateTo   = document.getElementById('hist-date-to');
+      if (devSel)   _histFilter.device_id = devSel.value;
+      if (dateFrom) _histFilter.date_from = dateFrom.value;
+      if (dateTo)   _histFilter.date_to   = dateTo.value;
+    }
+
+    // Construir URL
     let url;
     if (_alertsTab === 'active') {
       url = '/api/alerts/active';
-    } else if (_alertsTab === 'history') {
-      url = '/api/alerts?acknowledged=true&limit=200';
+    } else if (isHistory) {
+      const p = new URLSearchParams({ acknowledged: 'true', limit: '500' });
+      if (_histFilter.device_id) p.set('device_id', _histFilter.device_id);
+      if (_histFilter.date_from) p.set('date_from',  _histFilter.date_from);
+      if (_histFilter.date_to)   p.set('date_to',    _histFilter.date_to);
+      url = `/api/alerts?${p}`;
     } else {
       url = `/api/alerts?category=${_alertsTab}&limit=200`;
     }
 
-    const res = await fetch(url);
+    const res    = await fetch(url);
     const alerts = await res.json();
 
-    if (alerts.length === 0) {
-      const msgs = {
-        active:        'No hay alertas activas.',
-        history:       'Sin alertas previas.',
-        suspicious:    'No hay alertas en esta categoría.',
-        not_suspicious: 'No hay alertas en esta categoría.',
-      };
-      list.innerHTML = `<p style="color:#64748b;padding:1rem">${msgs[_alertsTab]}</p>`;
-      return;
-    }
+    // ── Historial con barra de filtros ───────────────────────────────────────
+    if (isHistory) {
+      const devOptions =
+        '<option value="">Todos los dispositivos</option>' +
+        _allDevices.map(d => {
+          const lbl = [d.ip, d.hostname].filter(Boolean).join(' / ');
+          const sel = d.id.toString() === _histFilter.device_id ? ' selected' : '';
+          return `<option value="${d.id}"${sel}>${escapeHtml(lbl)}</option>`;
+        }).join('');
 
-    if (isCategoryTab) {
-      const unacked = alerts.filter(a => !(a.acknowledged === 1 || a.acknowledged === true));
-      const acked   = alerts.filter(a =>   a.acknowledged === 1 || a.acknowledged === true);
-      let html = '';
-      if (unacked.length > 0) html += '<p class="alert-group-title">Activas</p>' + unacked.map(renderAlertItem).join('');
-      if (acked.length > 0)   html += '<p class="alert-group-title">Vistas</p>'  + acked.map(renderAlertItem).join('');
-      list.innerHTML = html;
+      const countText = `${alerts.length} alerta${alerts.length !== 1 ? 's' : ''}`;
+
+      list.innerHTML =
+        `<div class="history-filter-bar">
+          <div class="hist-filter-group">
+            <label for="hist-device">Dispositivo</label>
+            <select id="hist-device" class="hist-filter-select">${devOptions}</select>
+          </div>
+          <div class="hist-filter-group">
+            <label for="hist-date-from">Desde</label>
+            <input type="date" id="hist-date-from" class="hist-filter-input"
+                   value="${escapeHtml(_histFilter.date_from)}">
+          </div>
+          <div class="hist-filter-group">
+            <label for="hist-date-to">Hasta</label>
+            <input type="date" id="hist-date-to" class="hist-filter-input"
+                   value="${escapeHtml(_histFilter.date_to)}">
+          </div>
+          <button id="hist-apply-btn" class="filter-btn">Aplicar</button>
+          <button id="hist-clear-btn" class="filter-btn">Limpiar</button>
+          <span class="hist-count">${countText}</span>
+        </div>` +
+        (alerts.length === 0
+          ? '<p style="color:#64748b;padding:0.5rem 0">Sin alertas con los filtros seleccionados.</p>'
+          : alerts.map(renderAlertItem).join(''));
+
+      document.getElementById('hist-apply-btn').addEventListener('click', renderAlerts);
+      document.getElementById('hist-clear-btn').addEventListener('click', () => {
+        _histFilter = { device_id: '', date_from: '', date_to: '' };
+        renderAlerts();
+      });
+      // Aplicar también al presionar Enter en los campos de fecha
+      ['hist-date-from', 'hist-date-to'].forEach(id => {
+        document.getElementById(id)?.addEventListener('keydown', e => {
+          if (e.key === 'Enter') renderAlerts();
+        });
+      });
+
+    // ── Pestañas de categoría ─────────────────────────────────────────────────
+    } else if (isCategoryTab) {
+      if (alerts.length === 0) {
+        list.innerHTML = '<p style="color:#64748b;padding:1rem">No hay alertas en esta categoría.</p>';
+      } else {
+        const unacked = alerts.filter(a => !(a.acknowledged === 1 || a.acknowledged === true));
+        const acked   = alerts.filter(a =>   a.acknowledged === 1 || a.acknowledged === true);
+        let html = '';
+        if (unacked.length > 0) html += '<p class="alert-group-title">Activas</p>' + unacked.map(renderAlertItem).join('');
+        if (acked.length > 0)   html += '<p class="alert-group-title">Vistas</p>'  + acked.map(renderAlertItem).join('');
+        list.innerHTML = html;
+      }
+
+    // ── Pestaña activas ───────────────────────────────────────────────────────
     } else {
-      list.innerHTML = alerts.map(renderAlertItem).join('');
+      list.innerHTML = alerts.length === 0
+        ? '<p style="color:#64748b;padding:1rem">No hay alertas activas.</p>'
+        : alerts.map(renderAlertItem).join('');
     }
 
+    // Listeners compartidos para todos los tabs
     list.querySelectorAll('button[data-ack]').forEach(btn => {
       btn.addEventListener('click', () => acknowledgeAlert(parseInt(btn.dataset.ack, 10), btn));
     });
-
     list.querySelectorAll('button[data-cat-id]').forEach(btn => {
       btn.addEventListener('click', () =>
         setCategory(parseInt(btn.dataset.catId, 10), btn.dataset.catValue, btn)
