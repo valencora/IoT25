@@ -608,6 +608,97 @@
       transition: background 0.15s, color 0.15s;
     }
     .dismiss-anom-btn:hover { background: #1e293b; color: #e2e8f0; }
+    .metrics-row-btn {
+      background: transparent;
+      border: 1px solid #2d4a2d;
+      color: #34d399;
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      margin-left: 0.3rem;
+      vertical-align: middle;
+      transition: background 0.12s;
+    }
+    .metrics-row-btn:hover { background: #1a2a1a; }
+
+    /* ── Metrics panel ──────────────────────────────────────────────────── */
+    #metrics-btn {
+      background: #1a2a1a;
+      border: 1px solid #2d4a2d;
+      color: #e2e8f0;
+      padding: 0.5rem 0.85rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.875rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: background 0.15s;
+    }
+    #metrics-btn:hover { background: #2d4a2d; }
+
+    .metrics-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+      gap: 0.65rem;
+      margin-bottom: 1.1rem;
+    }
+    .metrics-card {
+      background: #12152a;
+      border: 1px solid #1e2235;
+      border-radius: 8px;
+      padding: 0.65rem 0.85rem;
+    }
+    .metrics-card .m-label {
+      font-size: 0.68rem;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      margin-bottom: 0.25rem;
+    }
+    .metrics-card .m-value {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #a78bfa;
+    }
+    .metrics-card .m-value.green  { color: #34d399; }
+    .metrics-card .m-value.blue   { color: #60a5fa; }
+    .metrics-card .m-value.amber  { color: #fbbf24; }
+    .metrics-proto-bar {
+      display: flex;
+      height: 7px;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 0.45rem;
+      gap: 1px;
+    }
+    .metrics-proto-bar .bar-tcp   { background: #60a5fa; }
+    .metrics-proto-bar .bar-udp   { background: #a78bfa; }
+    .metrics-proto-bar .bar-other { background: #475569; }
+
+    .metrics-charts {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1rem;
+    }
+    @media (min-width: 620px) {
+      .metrics-charts { grid-template-columns: 1fr 1fr; }
+    }
+    .chart-block {
+      background: #12152a;
+      border: 1px solid #1e2235;
+      border-radius: 8px;
+      padding: 0.65rem 0.85rem;
+    }
+    .chart-block .chart-title {
+      font-size: 0.7rem;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      margin-bottom: 0.5rem;
+    }
+    .chart-block canvas { max-height: 150px; }
   </style>
 </head>
 <body>
@@ -615,6 +706,9 @@
 <header>
   <h1>IoT25 — Monitor de Red</h1>
   <div class="header-right">
+    <button id="metrics-btn" type="button" title="Ver métricas de tráfico por dispositivo">
+      📊 Métricas
+    </button>
     <button id="anomalies-btn" type="button" title="Ver anomalías detectadas por el modelo">
       ⚠️ Anomalías
     </button>
@@ -679,6 +773,7 @@
   </div>
 </div>
 
+<script src="/static/vendor/chart.umd.min.js"></script>
 <script>
   const EVENT_LABELS = {
     device_discovered: 'Descubierto',
@@ -735,7 +830,10 @@
           <td>${escapeHtml(d.device_type ?? '—')}</td>
           <td><span class="badge ${escapeHtml(d.status)}">${escapeHtml(d.status)}</span></td>
           <td style="white-space:nowrap">${fmtDate(d.last_seen)}</td>
-          <td style="white-space:nowrap">${anomCell}</td>
+          <td style="white-space:nowrap">
+            ${anomCell}
+            <button class="metrics-row-btn" data-dev-id="${d.id}" title="Ver métricas de tráfico">📊</button>
+          </td>
         </tr>`;
     }).join('');
 
@@ -743,6 +841,13 @@
       row.addEventListener('click', () =>
         openDevice(row.dataset.mac, parseInt(row.dataset.id, 10))
       );
+    });
+
+    tbody.querySelectorAll('button.metrics-row-btn').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        openMetrics(parseInt(btn.dataset.devId, 10));
+      });
     });
 
     tbody.querySelectorAll('button.dismiss-anom-btn').forEach(btn => {
@@ -1331,12 +1436,250 @@
   function closeModal() {
     document.getElementById('overlay').classList.remove('open');
     document.getElementById('modal').classList.remove('wide');
+    destroyMetricsCharts();
   }
 
   document.getElementById('modal-close').addEventListener('click', closeModal);
   document.getElementById('overlay').addEventListener('click', e => {
     if (e.target === document.getElementById('overlay')) closeModal();
   });
+
+  // ── Metrics panel ─────────────────────────────────────────────────────────
+
+  let _metricsCharts = [];
+
+  function destroyMetricsCharts() {
+    _metricsCharts.forEach(c => c.destroy());
+    _metricsCharts = [];
+  }
+
+  function fmtBytes(b) {
+    if (b >= 1e9) return (b / 1e9).toFixed(2) + ' GB';
+    if (b >= 1e6) return (b / 1e6).toFixed(2) + ' MB';
+    if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB';
+    return Math.round(b) + ' B';
+  }
+
+  function downsample(arr, maxPts) {
+    if (arr.length <= maxPts) return arr;
+    const step = arr.length / maxPts;
+    return Array.from({ length: maxPts }, (_, i) => arr[Math.round(i * step)]);
+  }
+
+  function renderMetricsSummary(windows) {
+    if (!windows.length) return '<p style="color:#64748b">Sin datos.</p>';
+    const n   = windows.length;
+    const sum = key => windows.reduce((a, w) => a + (w.features[key] ?? 0), 0);
+    const avg = key => sum(key) / n;
+
+    const totalBytes  = sum('bytes_total');
+    const avgFlows    = avg('n_flows');
+    const avgDstIps   = avg('n_dst_ips');
+    const avgDstPorts = avg('n_dst_ports');
+    const pctTcp      = avg('pct_tcp') * 100;
+    const pctUdp      = avg('pct_udp') * 100;
+    const pctOther    = avg('pct_other') * 100;
+
+    const cards = [
+      { label: 'Ventanas analizadas',         value: n,                    cls: '' },
+      { label: 'Volumen total transferido',    value: fmtBytes(totalBytes), cls: 'green' },
+      { label: 'Flujos promedio / 5 min',      value: avgFlows.toFixed(1),  cls: '' },
+      { label: 'Destinos distintos (prom.)',   value: avgDstIps.toFixed(1), cls: 'blue' },
+      { label: 'Puertos distintos (prom.)',    value: avgDstPorts.toFixed(1), cls: 'amber' },
+    ].map(c => `
+      <div class="metrics-card">
+        <div class="m-label">${c.label}</div>
+        <div class="m-value ${c.cls}">${escapeHtml(String(c.value))}</div>
+      </div>`).join('');
+
+    return `
+      <div class="metrics-summary-grid">${cards}
+        <div class="metrics-card">
+          <div class="m-label">Protocolos (promedio)</div>
+          <div style="font-size:0.8rem;color:#94a3b8;margin-top:0.2rem">
+            TCP ${pctTcp.toFixed(0)}% &nbsp;UDP ${pctUdp.toFixed(0)}% &nbsp;Otros ${pctOther.toFixed(0)}%
+          </div>
+          <div class="metrics-proto-bar">
+            <div class="bar-tcp"   style="flex:${pctTcp}"></div>
+            <div class="bar-udp"   style="flex:${pctUdp}"></div>
+            <div class="bar-other" style="flex:${Math.max(pctOther, 0.5)}"></div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function buildChartData(windows, key, color) {
+    const ds = downsample(windows, 200);
+    return {
+      labels: ds.map(w => {
+        const d = new Date(w.window_start);
+        return d.toLocaleDateString('es-AR', { month: '2-digit', day: '2-digit' }) +
+               ' ' + d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+      }),
+      data: ds.map(w => w.features[key] ?? 0),
+      color,
+    };
+  }
+
+  function makeLineChart(canvasId, d) {
+    const ctx = document.getElementById(canvasId);
+    if (!ctx || typeof Chart === 'undefined') return;
+    const nPoints = d.labels.length;
+    const chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: d.labels,
+        datasets: [{
+          data:            d.data,
+          borderColor:     d.color,
+          backgroundColor: d.color + '18',
+          borderWidth:     1.5,
+          pointRadius:     nPoints > 80 ? 0 : 2,
+          tension:         0.3,
+          fill:            true,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        animation: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            mode: 'index',
+            intersect: false,
+            callbacks: {
+              label: ctx => ' ' + ctx.parsed.y.toFixed(2),
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: { color: '#64748b', maxTicksLimit: 7, maxRotation: 0 },
+            grid:  { color: '#1e2235' },
+          },
+          y: {
+            ticks: { color: '#64748b' },
+            grid:  { color: '#1e2235' },
+            beginAtZero: true,
+          },
+        },
+      },
+    });
+    _metricsCharts.push(chart);
+  }
+
+  function renderMetricsCharts(windows) {
+    destroyMetricsCharts();
+    const defs = [
+      { id: 'chart-bytes',   key: 'bytes_total', color: '#34d399' },
+      { id: 'chart-flows',   key: 'n_flows',     color: '#60a5fa' },
+      { id: 'chart-dstips',  key: 'n_dst_ips',   color: '#a78bfa' },
+    ];
+    defs.forEach(def => makeLineChart(def.id, buildChartData(windows, def.key, def.color)));
+  }
+
+  async function loadMetrics(deviceId) {
+    const content = document.getElementById('metrics-content');
+    if (!content) return;
+    destroyMetricsCharts();
+    content.innerHTML = '<p style="color:#64748b;padding:0.75rem 0">Cargando datos…</p>';
+
+    try {
+      const res     = await fetch(`/api/devices/${deviceId}/features`);
+      const data    = await res.json();
+      const windows = (data.windows ?? [])
+        .slice()
+        .sort((a, b) => (a.window_start ?? '') < (b.window_start ?? '') ? -1 : 1);
+
+      if (!windows.length) {
+        content.innerHTML = '<p style="color:#64748b;padding:0.75rem 0">Sin ventanas de datos para este dispositivo.</p>';
+        return;
+      }
+
+      content.innerHTML =
+        renderMetricsSummary(windows) +
+        `<div class="metrics-charts">
+          <div class="chart-block">
+            <div class="chart-title">Volumen de datos (bytes / ventana de 5 min)</div>
+            <canvas id="chart-bytes"></canvas>
+          </div>
+          <div class="chart-block">
+            <div class="chart-title">Flujos de red por ventana</div>
+            <canvas id="chart-flows"></canvas>
+          </div>
+          <div class="chart-block">
+            <div class="chart-title">Destinos distintos por ventana</div>
+            <canvas id="chart-dstips"></canvas>
+          </div>
+        </div>`;
+
+      renderMetricsCharts(windows);
+    } catch {
+      content.innerHTML = '<p style="color:#f87171;padding:0.75rem 0">Error al cargar los datos.</p>';
+    }
+  }
+
+  async function openMetrics(initialDeviceId) {
+    document.getElementById('modal-title').textContent = 'Métricas de tráfico';
+    document.getElementById('modal').classList.add('wide');
+    document.getElementById('modal-body').innerHTML = `
+      <div class="anom-device-sel-wrap">
+        <select id="metrics-device-sel" class="anom-device-sel">
+          <option value="">Cargando dispositivos…</option>
+        </select>
+        <button id="metrics-refresh-btn" class="anom-refresh-btn">↺ Actualizar</button>
+      </div>
+      <div id="metrics-content">
+        <p style="color:#64748b;padding:0.75rem 0">Seleccioná un dispositivo para ver sus métricas.</p>
+      </div>`;
+    document.getElementById('overlay').classList.add('open');
+
+    document.getElementById('metrics-refresh-btn').addEventListener('click', () => {
+      const sel = document.getElementById('metrics-device-sel');
+      if (sel && sel.value) loadMetrics(parseInt(sel.value, 10));
+    });
+
+    try {
+      const res  = await fetch('/api/devices');
+      const devs = await res.json();
+      const sel  = document.getElementById('metrics-device-sel');
+      if (!sel) return;
+
+      if (!devs.length) {
+        sel.innerHTML = '<option value="">Sin dispositivos registrados</option>';
+        return;
+      }
+
+      sel.innerHTML =
+        '<option value="">— Elegí un dispositivo —</option>' +
+        devs.map(d => {
+          const lbl = [d.ip, d.hostname].filter(Boolean).join(' / ') || d.mac;
+          return `<option value="${d.id}">${escapeHtml(lbl)}</option>`;
+        }).join('');
+
+      sel.addEventListener('change', () => {
+        if (sel.value) {
+          loadMetrics(parseInt(sel.value, 10));
+        } else {
+          destroyMetricsCharts();
+          const c = document.getElementById('metrics-content');
+          if (c) c.innerHTML = '<p style="color:#64748b;padding:0.75rem 0">Seleccioná un dispositivo para ver sus métricas.</p>';
+        }
+      });
+
+      if (initialDeviceId) {
+        sel.value = String(initialDeviceId);
+        if (sel.value) loadMetrics(initialDeviceId);
+      } else if (devs.length === 1) {
+        sel.value = String(devs[0].id);
+        loadMetrics(devs[0].id);
+      }
+    } catch {
+      const sel = document.getElementById('metrics-device-sel');
+      if (sel) sel.innerHTML = '<option value="">Error al cargar dispositivos</option>';
+    }
+  }
 
   // ── Anomaly panel ─────────────────────────────────────────────────────────
 
@@ -1613,6 +1956,7 @@
   document.getElementById('anomalies-btn').addEventListener('click', openAnomalies);
   document.getElementById('alerts-btn').addEventListener('click', openAlerts);
   document.getElementById('training-btn').addEventListener('click', openTraining);
+  document.getElementById('metrics-btn').addEventListener('click', () => openMetrics(null));
 
   loadDevices();
   refreshAlertsCount();
