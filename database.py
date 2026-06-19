@@ -151,6 +151,8 @@ def init_db() -> None:
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_alerts_dedup_key ON alerts(dedup_key)"
         )
+    if "recommendations" not in existing:
+        cursor.execute("ALTER TABLE alerts ADD COLUMN recommendations TEXT")
 
     conn.commit()
 

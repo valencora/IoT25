@@ -15,6 +15,7 @@ def create_alert(
     technical_detail: dict | None = None,
     event_time: datetime | None = None,
     dedup_key: str | None = None,
+    recommendation: str | None = None,
 ) -> int | None:
     """
     Inserta una alerta y devuelve el nuevo id, o None si es duplicado.
@@ -76,11 +77,11 @@ def create_alert(
         """
         INSERT INTO alerts
             (device_id, type, severity, message, technical_detail,
-             timestamp, created_at, dedup_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             timestamp, created_at, dedup_key, recommendations)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (device_id, alert_type, severity, message, detail_json,
-         timestamp_val, now_iso, dedup_key),
+         timestamp_val, now_iso, dedup_key, recommendation),
     )
     conn.commit()
     logger.info(
@@ -97,7 +98,7 @@ def get_active_alerts() -> list[dict]:
     rows = conn.execute(
         """
         SELECT id, device_id, type, severity, message, technical_detail,
-               timestamp, created_at, acknowledged, resolved, category
+               timestamp, created_at, acknowledged, resolved, category, recommendations
         FROM alerts
         WHERE acknowledged = 0
         ORDER BY

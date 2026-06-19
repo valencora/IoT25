@@ -454,6 +454,100 @@ _FEAT_THREAT_MSG: dict[str, tuple[str | None, str | None]] = {
     ),
 }
 
+# Recomendaciones de acción por feature y dirección de desviación.
+# Tupla: (acción si el valor es ALTO, acción si es BAJO)
+# None indica que esa dirección no amerita recomendación específica.
+_FEAT_ACTION: dict[str, tuple[str | None, str | None]] = {
+    "n_dst_ips": (
+        "Revisá si el dispositivo debería estar contactando tantas direcciones distintas. "
+        "Si no reconocés esta actividad, desconectalo de la red y verificá si tiene "
+        "actualizaciones de seguridad pendientes.",
+        "Revisá a qué dirección se está conectando el dispositivo de forma sostenida. "
+        "Este patrón puede indicar comunicación con un servidor externo. "
+        "Ante la duda, aislá el dispositivo y revisá su tráfico con un técnico.",
+    ),
+    "n_dst_ports": (
+        "Revisá si el dispositivo debería estar accediendo a tantos puertos distintos. "
+        "Si no reconocés esta actividad, desconectalo de la red y verificá si tiene "
+        "actualizaciones de seguridad pendientes.",
+        None,
+    ),
+    "bytes_total": (
+        "Verificá si el dispositivo debería estar transfiriendo esta cantidad de datos. "
+        "Si no reconocés la actividad, desconectalo de la red y revisá su configuración "
+        "o consultá con un responsable de seguridad.",
+        None,
+    ),
+    "bytes_mean": (
+        "Verificá si el dispositivo debería estar moviendo tantos datos por conexión. "
+        "Si no reconocés la actividad, desconectalo y revisá su configuración.",
+        None,
+    ),
+    "packets_total": (
+        "Verificá si el dispositivo debería estar generando tanto tráfico de red. "
+        "Si no iniciaste ninguna actividad especial, desconectalo y revisá su estado.",
+        None,
+    ),
+    "packets_mean": (
+        "Revisá si el dispositivo está funcionando normalmente. "
+        "Si el tráfico te parece inusual, verificá su configuración.",
+        None,
+    ),
+    "n_flows": (
+        "Revisá si el dispositivo debería estar generando tantas conexiones de red. "
+        "Si no reconocés esta actividad, desconectalo y verificá su estado.",
+        None,
+    ),
+    "duration_mean_ms": (
+        "Revisá a qué servidor se está conectando el dispositivo durante tanto tiempo. "
+        "Este patrón puede indicar una conexión persistente a un servidor externo. "
+        "Ante la duda, aislá el dispositivo y verificá su tráfico con un técnico.",
+        None,
+    ),
+    "pct_udp": (
+        "El dispositivo cambió el tipo de tráfico que genera. Verificá si esto es esperado; "
+        "si no, reiniciá el dispositivo y monitoreá si el comportamiento continúa.",
+        None,
+    ),
+    "pct_other": (
+        "El dispositivo está usando protocolos de red poco habituales. "
+        "Verificá si fue modificado o actualizado recientemente.",
+        None,
+    ),
+    "pct_tcp": (
+        "El dispositivo cambió el tipo de tráfico que genera. Verificá si esto es esperado; "
+        "si no, reiniciá el dispositivo y monitoreá si el comportamiento continúa.",
+        None,
+    ),
+}
+
+# Recomendación genérica cuando no hay feature específica identificada.
+_ACTION_FALLBACK = (
+    "Revisá la actividad reciente del dispositivo. Si no reconocés este comportamiento, "
+    "considerá desconectarlo de la red temporalmente y consultá con un responsable de seguridad."
+)
+
+
+def _pick_recommendation(
+    features: dict,
+    normalizer: dict[str, tuple[float, float]],
+) -> str:
+    """
+    Elige la recomendación de acción más relevante según la feature principal
+    que disparó la anomalía. Sigue el mismo criterio de priorización que
+    _build_anomaly_message (mayor desviación + peso de alarma).
+    """
+    top = _top_deviated_features(features, normalizer, top_n=5)
+    for t in top:
+        action_pair = _FEAT_ACTION.get(t["name"])
+        if not action_pair:
+            continue
+        action = action_pair[0] if t["direction"] == "above" else action_pair[1]
+        if action is not None:
+            return action
+    return _ACTION_FALLBACK
+
+
 # Peso de alarma por feature: prioriza las más relevantes cuando hay empate.
 _FEAT_ALARM_WEIGHT: dict[str, int] = {
     "n_dst_ips":     10,
@@ -680,6 +774,8 @@ def generate_anomaly_alerts(device_id: int, conn: Connection | None = None) -> i
         except (ValueError, AttributeError):
             evt = None
 
+        recommendation = _pick_recommendation(w["features"], normalizer)
+
         alert_id = create_alert(
             device_id        = device_id,
             alert_type       = "anomaly_iforest",
@@ -693,6 +789,7 @@ def generate_anomaly_alerts(device_id: int, conn: Connection | None = None) -> i
             },
             event_time       = evt,
             dedup_key        = f"anomaly_iforest:{device_id}:{w.get('window_start', '')}",
+            recommendation   = recommendation,
         )
         if alert_id is not None:
             n_created += 1

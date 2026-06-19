@@ -497,6 +497,26 @@
     .score-bar-bg   { background: #2d3148; border-radius: 2px; width: 48px; height: 5px; overflow: hidden; flex-shrink: 0; }
     .score-bar-fill { height: 100%; border-radius: 2px; }
 
+    /* Recomendación de acción en alertas */
+    .alert-recommendation {
+      background: #0f2a1a;
+      border-left: 3px solid #22c55e;
+      border-radius: 0 4px 4px 0;
+      padding: 0.45rem 0.75rem;
+      margin-top: 0.35rem;
+      font-size: 0.82rem;
+      color: #bbf7d0;
+      line-height: 1.45;
+    }
+    .alert-recommendation strong {
+      color: #4ade80;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      display: block;
+      margin-bottom: 0.2rem;
+    }
+
     /* Filtros del historial de alertas */
     .history-filter-bar {
       display: flex;
@@ -943,6 +963,13 @@
       .map(c => `<button class="cat-btn" data-cat-id="${a.id}" data-cat-value="${c.value}">${c.label}</button>`)
       .join('');
 
+    const rec = a.recommendations;
+    const recHtml = rec
+      ? `<div class="alert-recommendation">
+           <strong>💡 Acción sugerida</strong>${escapeHtml(rec)}
+         </div>`
+      : '';
+
     return `
       <div class="alert-item ${isAcked ? 'acked' : ''}" data-id="${a.id}">
         <div class="alert-row">
@@ -953,6 +980,7 @@
           </div>
           ${action}
         </div>
+        ${recHtml}
         <div class="alert-row" style="justify-content:flex-start;gap:0.4rem;margin-top:0.2rem">
           ${catBtns}
         </div>
