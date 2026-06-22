@@ -699,6 +699,37 @@
       margin-bottom: 0.5rem;
     }
     .chart-block canvas { max-height: 150px; }
+
+    .metrics-range-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin-bottom: 0.75rem;
+      padding-bottom: 0.6rem;
+      border-bottom: 1px solid #1e2235;
+    }
+    .metrics-range-label {
+      font-size: 0.75rem;
+      color: #64748b;
+      margin-right: 0.15rem;
+    }
+    .metrics-range-btn {
+      background: #1e2235;
+      border: 1px solid #2d3a4a;
+      color: #94a3b8;
+      padding: 0.22rem 0.65rem;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 0.78rem;
+      transition: background 0.12s, color 0.12s;
+    }
+    .metrics-range-btn:hover { background: #2d3a4a; color: #e2e8f0; }
+    .metrics-range-btn.active {
+      background: #1a2a1a;
+      border-color: #2d4a2d;
+      color: #34d399;
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -1443,6 +1474,7 @@
     document.getElementById('overlay').classList.remove('open');
     document.getElementById('modal').classList.remove('wide');
     destroyMetricsCharts();
+    _metricsAllWindows = null;
   }
 
   document.getElementById('modal-close').addEventListener('click', closeModal);
@@ -1452,7 +1484,9 @@
 
   // ── Metrics panel ─────────────────────────────────────────────────────────
 
-  let _metricsCharts = [];
+  let _metricsCharts     = [];
+  let _metricsRange      = '3h';  // persiste entre aperturas del modal
+  let _metricsAllWindows = null;  // caché de todas las ventanas del dispositivo actual
 
   function destroyMetricsCharts() {
     _metricsCharts.forEach(c => c.destroy());
@@ -1472,8 +1506,22 @@
     return Array.from({ length: maxPts }, (_, i) => arr[Math.round(i * step)]);
   }
 
+  /**
+   * Filtra ventanas al rango pedido contando hacia atrás desde la ventana MÁS
+   * RECIENTE del dispositivo (no desde Date.now()). Así funciona correctamente
+   * con datasets históricos cuya última ventana puede ser de días/meses atrás.
+   */
+  function filterWindowsByRange(windows, range) {
+    if (range === 'all' || !windows.length) return windows;
+    const hours = { '3h': 3, '6h': 6, '24h': 24 }[range];
+    if (!hours) return windows;
+    const maxMs    = new Date(windows[windows.length - 1].window_start).getTime();
+    const cutoffMs = maxMs - hours * 3600 * 1000;
+    return windows.filter(w => new Date(w.window_start).getTime() >= cutoffMs);
+  }
+
   function renderMetricsSummary(windows) {
-    if (!windows.length) return '<p style="color:#64748b">Sin datos.</p>';
+    if (!windows.length) return '';
     const n   = windows.length;
     const sum = key => windows.reduce((a, w) => a + (w.features[key] ?? 0), 0);
     const avg = key => sum(key) / n;
@@ -1487,10 +1535,10 @@
     const pctOther    = avg('pct_other') * 100;
 
     const cards = [
-      { label: 'Ventanas analizadas',         value: n,                    cls: '' },
-      { label: 'Volumen total transferido',    value: fmtBytes(totalBytes), cls: 'green' },
-      { label: 'Flujos promedio / 5 min',      value: avgFlows.toFixed(1),  cls: '' },
-      { label: 'Destinos distintos (prom.)',   value: avgDstIps.toFixed(1), cls: 'blue' },
+      { label: 'Ventanas analizadas',         value: n,                      cls: '' },
+      { label: 'Volumen total transferido',    value: fmtBytes(totalBytes),   cls: 'green' },
+      { label: 'Flujos promedio / 5 min',      value: avgFlows.toFixed(1),    cls: '' },
+      { label: 'Destinos distintos (prom.)',   value: avgDstIps.toFixed(1),   cls: 'blue' },
       { label: 'Puertos distintos (prom.)',    value: avgDstPorts.toFixed(1), cls: 'amber' },
     ].map(c => `
       <div class="metrics-card">
@@ -1514,8 +1562,8 @@
       </div>`;
   }
 
-  function buildChartData(windows, key, color) {
-    const ds = downsample(windows, 200);
+  function buildChartData(windows, key, color, applyDownsample) {
+    const ds = applyDownsample ? downsample(windows, 200) : windows;
     return {
       labels: ds.map(w => {
         const d = new Date(w.window_start);
@@ -1575,20 +1623,70 @@
     _metricsCharts.push(chart);
   }
 
-  function renderMetricsCharts(windows) {
+  function renderMetricsCharts(windows, applyDownsample) {
     destroyMetricsCharts();
     const defs = [
-      { id: 'chart-bytes',   key: 'bytes_total', color: '#34d399' },
-      { id: 'chart-flows',   key: 'n_flows',     color: '#60a5fa' },
-      { id: 'chart-dstips',  key: 'n_dst_ips',   color: '#a78bfa' },
+      { id: 'chart-bytes',  key: 'bytes_total', color: '#34d399' },
+      { id: 'chart-flows',  key: 'n_flows',     color: '#60a5fa' },
+      { id: 'chart-dstips', key: 'n_dst_ips',   color: '#a78bfa' },
     ];
-    defs.forEach(def => makeLineChart(def.id, buildChartData(windows, def.key, def.color)));
+    defs.forEach(def => makeLineChart(def.id, buildChartData(windows, def.key, def.color, applyDownsample)));
+  }
+
+  /** Filtra _metricsAllWindows al rango actual y renderiza tarjetas + gráficos. */
+  function applyRangeAndRender() {
+    const content = document.getElementById('metrics-content');
+    if (!content || !_metricsAllWindows) return;
+
+    // Actualizar botón activo
+    document.querySelectorAll('.metrics-range-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.range === _metricsRange);
+    });
+
+    const filtered = filterWindowsByRange(_metricsAllWindows, _metricsRange);
+
+    if (!filtered.length) {
+      const rangeLabel = { '3h': '3 horas', '6h': '6 horas', '24h': '24 horas' }[_metricsRange] ?? _metricsRange;
+      destroyMetricsCharts();
+      content.innerHTML = `
+        <div style="text-align:center;padding:2rem 0;color:#64748b">
+          <div style="font-size:1.4rem;margin-bottom:0.5rem">—</div>
+          <div>No hay datos en las últimas ${rangeLabel}.</div>
+          <div style="margin-top:0.35rem;font-size:0.82rem">
+            Probá un rango mayor o seleccioná <strong style="color:#94a3b8">Todas</strong>.
+          </div>
+        </div>`;
+      return;
+    }
+
+    // Downsampling solo para "Todas" (histórico completo potencialmente largo)
+    const applyDownsample = _metricsRange === 'all';
+
+    content.innerHTML =
+      renderMetricsSummary(filtered) +
+      `<div class="metrics-charts">
+        <div class="chart-block">
+          <div class="chart-title">Volumen de datos (bytes / ventana de 5 min)</div>
+          <canvas id="chart-bytes"></canvas>
+        </div>
+        <div class="chart-block">
+          <div class="chart-title">Flujos de red por ventana</div>
+          <canvas id="chart-flows"></canvas>
+        </div>
+        <div class="chart-block">
+          <div class="chart-title">Destinos distintos por ventana</div>
+          <canvas id="chart-dstips"></canvas>
+        </div>
+      </div>`;
+
+    renderMetricsCharts(filtered, applyDownsample);
   }
 
   async function loadMetrics(deviceId) {
     const content = document.getElementById('metrics-content');
     if (!content) return;
     destroyMetricsCharts();
+    _metricsAllWindows = null;
     content.innerHTML = '<p style="color:#64748b;padding:0.75rem 0">Cargando datos…</p>';
 
     try {
@@ -1603,24 +1701,8 @@
         return;
       }
 
-      content.innerHTML =
-        renderMetricsSummary(windows) +
-        `<div class="metrics-charts">
-          <div class="chart-block">
-            <div class="chart-title">Volumen de datos (bytes / ventana de 5 min)</div>
-            <canvas id="chart-bytes"></canvas>
-          </div>
-          <div class="chart-block">
-            <div class="chart-title">Flujos de red por ventana</div>
-            <canvas id="chart-flows"></canvas>
-          </div>
-          <div class="chart-block">
-            <div class="chart-title">Destinos distintos por ventana</div>
-            <canvas id="chart-dstips"></canvas>
-          </div>
-        </div>`;
-
-      renderMetricsCharts(windows);
+      _metricsAllWindows = windows;
+      applyRangeAndRender();
     } catch {
       content.innerHTML = '<p style="color:#f87171;padding:0.75rem 0">Error al cargar los datos.</p>';
     }
@@ -1636,10 +1718,26 @@
         </select>
         <button id="metrics-refresh-btn" class="anom-refresh-btn">↺ Actualizar</button>
       </div>
+      <div class="metrics-range-bar">
+        <span class="metrics-range-label">Rango:</span>
+        <button class="metrics-range-btn" data-range="3h">3h</button>
+        <button class="metrics-range-btn" data-range="6h">6h</button>
+        <button class="metrics-range-btn" data-range="24h">24h</button>
+        <button class="metrics-range-btn" data-range="all">Todas</button>
+      </div>
       <div id="metrics-content">
         <p style="color:#64748b;padding:0.75rem 0">Seleccioná un dispositivo para ver sus métricas.</p>
       </div>`;
     document.getElementById('overlay').classList.add('open');
+
+    // Marcar botón activo según _metricsRange actual
+    document.querySelectorAll('.metrics-range-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.range === _metricsRange);
+      btn.addEventListener('click', () => {
+        _metricsRange = btn.dataset.range;
+        applyRangeAndRender();
+      });
+    });
 
     document.getElementById('metrics-refresh-btn').addEventListener('click', () => {
       const sel = document.getElementById('metrics-device-sel');
@@ -1669,6 +1767,7 @@
           loadMetrics(parseInt(sel.value, 10));
         } else {
           destroyMetricsCharts();
+          _metricsAllWindows = null;
           const c = document.getElementById('metrics-content');
           if (c) c.innerHTML = '<p style="color:#64748b;padding:0.75rem 0">Seleccioná un dispositivo para ver sus métricas.</p>';
         }
