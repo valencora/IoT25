@@ -165,6 +165,7 @@ def _insert_default_settings(cursor: sqlite3.Cursor) -> None:
         ("kitsune_threshold",     "0.1"),
         ("alert_level_min",       "warning"),
         ("notifications_enabled", "false"),
+        ("email_min_severity",    "high"),    # medium / high / critical
     ]
     cursor.executemany(
         "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?, ?, ?)",

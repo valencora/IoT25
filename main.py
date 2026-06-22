@@ -21,6 +21,7 @@ logging.basicConfig(
 TCPDUMP_ENABLED = True
 
 from alert_manager import create_alert, get_active_alerts
+from email_notifier import send_test_email
 from anomaly_detector import (
     AnomalyScanner,
     generate_anomaly_alerts,
@@ -449,6 +450,16 @@ def device_features(device_id: int):
         "feature_names":  FEATURE_NAMES,
         "windows":        windows,
     }
+
+
+@app.post("/api/email/test")
+def email_test():
+    """
+    Envía un correo de prueba para verificar la configuración SMTP.
+    Requiere que SMTP_USER, SMTP_PASSWORD y ALERT_EMAIL_TO estén definidas
+    como variables de entorno.
+    """
+    return send_test_email()
 
 
 @app.get("/api/stats")

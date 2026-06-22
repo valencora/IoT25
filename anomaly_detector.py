@@ -36,6 +36,7 @@ from river import anomaly
 
 from alert_manager import create_alert
 from database import get_db
+from email_notifier import send_alert_email
 from feature_extractor import FEATURE_NAMES, extract_features
 
 logger = logging.getLogger(__name__)
@@ -793,6 +794,16 @@ def generate_anomaly_alerts(device_id: int, conn: Connection | None = None) -> i
         )
         if alert_id is not None:
             n_created += 1
+            # Notificación por correo: best-effort, no interrumpe el flujo.
+            send_alert_email({
+                "device_id":       device_id,
+                "device_label":    device_label,
+                "type":            "anomaly_iforest",
+                "severity":        severity,
+                "message":         message,
+                "recommendations": recommendation,
+                "timestamp":       w.get("window_start"),
+            })
 
     logger.info(
         "generate_anomaly_alerts: device_id=%d ventanas_anómalas=%d alertas_creadas=%d",
