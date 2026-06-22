@@ -63,13 +63,18 @@ _SEV_ORDER: dict[str, int] = {"medium": 0, "high": 1, "critical": 2}
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def is_email_configured() -> bool:
-    """True si las variables de entorno mínimas para enviar correo están presentes."""
-    return bool(
-        os.getenv("SMTP_USER")
-        and os.getenv("SMTP_PASSWORD")
-        and os.getenv("ALERT_EMAIL_TO")
-    )
+def is_smtp_configured() -> bool:
+    """True si las credenciales SMTP (SMTP_USER y SMTP_PASSWORD) están en env vars.
+    No requiere ALERT_EMAIL_TO porque el destinatario puede venir de settings."""
+    return bool(os.getenv("SMTP_USER") and os.getenv("SMTP_PASSWORD"))
+
+
+def _get_email_to() -> str:
+    """Destino: settings['email_to'] si está definido, si no la env var ALERT_EMAIL_TO."""
+    db_to = _get_setting("email_to", "").strip()
+    if db_to:
+        return db_to
+    return os.getenv("ALERT_EMAIL_TO", "").strip()
 
 
 def _get_setting(key: str, default: str) -> str:
@@ -93,7 +98,7 @@ def _fmt_local(iso_ts: str | None) -> str:
         return iso_ts
 
 
-def _build_alert_message(alert: dict) -> EmailMessage:
+def _build_alert_message(alert: dict, to: str) -> EmailMessage:
     severity   = (alert.get("severity") or "medium").upper()
     device     = alert.get("device_label") or f"dispositivo #{alert.get('device_id', '?')}"
     body_text  = alert.get("message") or "Sin detalle."
@@ -119,7 +124,7 @@ def _build_alert_message(alert: dict) -> EmailMessage:
     msg = EmailMessage()
     msg["Subject"] = f"[IoT25] Alerta {severity}: {device}"
     msg["From"]    = os.environ["SMTP_USER"]
-    msg["To"]      = os.environ["ALERT_EMAIL_TO"]
+    msg["To"]      = to
     msg.set_content(body)
     return msg
 
@@ -142,22 +147,30 @@ def _send_via_smtp(msg: EmailMessage) -> None:
 
 def send_alert_email(alert: dict) -> bool:
     """
-    Envía un correo para la alerta dada, respetando el nivel mínimo de severidad.
+    Envía un correo para la alerta dada.
+
+    Verifica en orden:
+      1. Credenciales SMTP presentes (env vars SMTP_USER/SMTP_PASSWORD).
+      2. email_enabled = 'true' en settings (interruptor global).
+      3. Destinatario configurado (settings['email_to'] o env var ALERT_EMAIL_TO).
+      4. Severidad de la alerta >= email_min_severity de settings.
+
+    Retorna True si se envió. Cualquier fallo se loguea pero NO se propaga.
 
     Parámetros esperados en `alert`:
-        device_id     int
-        device_label  str   — nombre o IP del dispositivo
-        type          str   — tipo de alerta (ej. 'anomaly_iforest')
-        severity      str   — 'medium' / 'high' / 'critical'
-        message       str   — descripción legible de la anomalía
-        recommendations str | None
-        timestamp     str | None  — ISO 8601 UTC
-
-    Retorna True si se envió, False si se omitió o falló (el error queda logueado
-    pero NO se propaga — el flujo de creación de alertas no se interrumpe).
+        device_id, device_label, type, severity, message, recommendations, timestamp
     """
-    if not is_email_configured():
-        logger.debug("Email omitido: variables SMTP no configuradas.")
+    if not is_smtp_configured():
+        logger.debug("Email omitido: credenciales SMTP no configuradas.")
+        return False
+
+    if _get_setting("email_enabled", "false").lower() != "true":
+        logger.debug("Email omitido: email_enabled = false.")
+        return False
+
+    to = _get_email_to()
+    if not to:
+        logger.debug("Email omitido: sin destinatario configurado.")
         return False
 
     min_sev   = _get_setting("email_min_severity", "high")
@@ -169,11 +182,11 @@ def send_alert_email(alert: dict) -> bool:
         return False
 
     try:
-        msg = _build_alert_message(alert)
+        msg = _build_alert_message(alert, to)
         _send_via_smtp(msg)
         logger.info(
             "Email de alerta enviado — device=%s severity=%s to=%s",
-            alert.get("device_label"), alert_sev, msg["To"],
+            alert.get("device_label"), alert_sev, to,
         )
         return True
     except Exception as exc:
@@ -184,19 +197,29 @@ def send_alert_email(alert: dict) -> bool:
 def send_test_email() -> dict:
     """
     Envía un correo de prueba para verificar la configuración SMTP.
+    Ignora intencionalmente email_enabled (es una prueba manual).
     Retorna {'ok': bool, 'detail': str}.
     """
-    if not is_email_configured():
+    if not is_smtp_configured():
         return {
             "ok": False,
             "detail": (
-                "Variables SMTP no configuradas. "
-                "Definí SMTP_USER, SMTP_PASSWORD y ALERT_EMAIL_TO."
+                "Credenciales SMTP no configuradas en el servidor. "
+                "Definí SMTP_USER y SMTP_PASSWORD como variables de entorno."
+            ),
+        }
+
+    to = _get_email_to()
+    if not to:
+        return {
+            "ok": False,
+            "detail": (
+                "Sin destinatario configurado. "
+                "Guardá un email en la sección Notificaciones o definí ALERT_EMAIL_TO."
             ),
         }
 
     user = os.environ["SMTP_USER"]
-    to   = os.environ["ALERT_EMAIL_TO"]
     host = os.getenv("SMTP_HOST", "smtp.gmail.com")
     port = int(os.getenv("SMTP_PORT", "587"))
 
@@ -208,7 +231,6 @@ def send_test_email() -> dict:
         "Este es un correo de prueba generado por IoT25.\n\n"
         "Si recibiste este mensaje, la configuración SMTP está funcionando correctamente.\n\n"
         f"Servidor : {host}:{port}\n"
-        f"Usuario  : {user}\n"
         f"Destino  : {to}\n"
     )
 

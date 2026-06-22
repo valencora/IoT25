@@ -517,6 +517,77 @@
       margin-bottom: 0.2rem;
     }
 
+    /* Sección de configuración de correo */
+    .email-cfg {
+      padding: 0.25rem 0;
+    }
+    .smtp-status-row {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      margin-bottom: 1rem;
+      padding: 0.55rem 0.8rem;
+      background: #0d1117;
+      border-radius: 6px;
+      font-size: 0.82rem;
+    }
+    .smtp-badge {
+      padding: 0.18rem 0.55rem;
+      border-radius: 4px;
+      font-weight: 600;
+      font-size: 0.75rem;
+    }
+    .smtp-badge.ok  { background: #0f2a1a; color: #34d399; border: 1px solid #2d4a2d; }
+    .smtp-badge.nok { background: #2a1a0a; color: #fbbf24; border: 1px solid #4a3a1a; }
+    .smtp-hint { color: #475569; font-size: 0.75rem; }
+    .email-cfg-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    .email-cfg-label {
+      min-width: 140px;
+      font-size: 0.82rem;
+      color: #94a3b8;
+    }
+    .email-cfg-input, .email-cfg-select {
+      flex: 1;
+      background: #12152a;
+      border: 1px solid #2d3a4a;
+      color: #e2e8f0;
+      padding: 0.38rem 0.65rem;
+      border-radius: 5px;
+      font-size: 0.85rem;
+    }
+    .email-cfg-input:focus, .email-cfg-select:focus {
+      outline: none; border-color: #a78bfa;
+    }
+    .email-cfg-btns {
+      display: flex;
+      gap: 0.6rem;
+      margin-top: 1rem;
+    }
+    .email-cfg-btns button {
+      padding: 0.45rem 1rem;
+      border-radius: 6px;
+      border: 1px solid #2d3a4a;
+      cursor: pointer;
+      font-size: 0.83rem;
+      transition: background 0.12s;
+    }
+    #email-save-btn  { background: #1a2a1a; border-color: #2d4a2d; color: #34d399; }
+    #email-save-btn:hover { background: #2d4a2d; }
+    #email-test-btn  { background: #1e2235; color: #94a3b8; }
+    #email-test-btn:hover { background: #2d3a4a; color: #e2e8f0; }
+    #email-feedback {
+      margin-top: 0.6rem;
+      font-size: 0.82rem;
+      min-height: 1.2rem;
+    }
+    #email-feedback.ok  { color: #34d399; }
+    #email-feedback.err { color: #f87171; }
+
     /* Filtros del historial de alertas */
     .history-filter-bar {
       display: flex;
@@ -1072,6 +1143,7 @@
         <button class="tab ${_alertsTab === 'history' ? 'active' : ''}" data-tab="history">Historial</button>
         <button class="tab ${_alertsTab === 'suspicious' ? 'active' : ''}" data-tab="suspicious">Sospechosas</button>
         <button class="tab ${_alertsTab === 'not_suspicious' ? 'active' : ''}" data-tab="not_suspicious">No sospechosas</button>
+        <button class="tab ${_alertsTab === 'notifications' ? 'active' : ''}" data-tab="notifications">📧 Notificaciones</button>
       </div>
       <div id="alerts-list">
         <p style="color:#64748b;padding:1rem">Cargando…</p>
@@ -1134,6 +1206,11 @@
   async function renderAlerts() {
     const list = document.getElementById('alerts-list');
     if (!list) return;
+
+    if (_alertsTab === 'notifications') {
+      await renderEmailSettings();
+      return;
+    }
 
     const isCategoryTab = _alertsTab === 'suspicious' || _alertsTab === 'not_suspicious';
     const isHistory     = _alertsTab === 'history';
@@ -1481,6 +1558,103 @@
   document.getElementById('overlay').addEventListener('click', e => {
     if (e.target === document.getElementById('overlay')) closeModal();
   });
+
+  // ── Email settings panel ──────────────────────────────────────────────────
+
+  async function renderEmailSettings() {
+    const list = document.getElementById('alerts-list');
+    if (!list) return;
+    list.innerHTML = '<p style="color:#64748b;padding:0.75rem 0">Cargando configuración…</p>';
+
+    let cfg;
+    try {
+      const res = await fetch('/api/settings/email');
+      cfg = await res.json();
+    } catch {
+      list.innerHTML = '<p style="color:#f87171">Error al cargar la configuración.</p>';
+      return;
+    }
+
+    const smtpOk = cfg.smtp_configured;
+    list.innerHTML = `
+      <div class="email-cfg">
+        <div class="smtp-status-row">
+          <span class="smtp-hint">Credenciales SMTP del servidor:</span>
+          <span class="smtp-badge ${smtpOk ? 'ok' : 'nok'}">
+            ${smtpOk ? '✓ Configuradas' : '⚠ No configuradas'}
+          </span>
+          ${smtpOk ? '' : '<span class="smtp-hint">Definí SMTP_USER y SMTP_PASSWORD en el servidor.</span>'}
+        </div>
+
+        <div class="email-cfg-row">
+          <label class="email-cfg-label" for="email-enabled-sel">Notificaciones</label>
+          <select id="email-enabled-sel" class="email-cfg-select">
+            <option value="true"  ${cfg.email_enabled === 'true'  ? 'selected' : ''}>Activadas</option>
+            <option value="false" ${cfg.email_enabled === 'false' ? 'selected' : ''}>Desactivadas</option>
+          </select>
+        </div>
+
+        <div class="email-cfg-row">
+          <label class="email-cfg-label" for="email-to-input">Destinatario</label>
+          <input id="email-to-input" class="email-cfg-input" type="email"
+                 placeholder="admin@ejemplo.com"
+                 value="${escapeHtml(cfg.email_to)}">
+        </div>
+
+        <div class="email-cfg-row">
+          <label class="email-cfg-label" for="email-sev-sel">Nivel mínimo</label>
+          <select id="email-sev-sel" class="email-cfg-select">
+            <option value="medium"   ${cfg.email_min_severity === 'medium'   ? 'selected' : ''}>Medium — cualquier anomalía</option>
+            <option value="high"     ${cfg.email_min_severity === 'high'     ? 'selected' : ''}>High — alertas importantes (recomendado)</option>
+            <option value="critical" ${cfg.email_min_severity === 'critical' ? 'selected' : ''}>Critical — solo urgentes</option>
+          </select>
+        </div>
+
+        <div class="email-cfg-btns">
+          <button id="email-save-btn">Guardar</button>
+          <button id="email-test-btn">Enviar correo de prueba</button>
+        </div>
+        <div id="email-feedback"></div>
+      </div>`;
+
+    document.getElementById('email-save-btn').addEventListener('click', async () => {
+      const fb = document.getElementById('email-feedback');
+      fb.className = '';
+      fb.textContent = 'Guardando…';
+      try {
+        const r = await fetch('/api/settings/email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email_to:           document.getElementById('email-to-input').value.trim(),
+            email_min_severity: document.getElementById('email-sev-sel').value,
+            email_enabled:      document.getElementById('email-enabled-sel').value,
+          }),
+        });
+        const data = await r.json();
+        if (r.ok && data.ok) {
+          fb.className = 'ok'; fb.textContent = '✓ Configuración guardada.';
+        } else {
+          fb.className = 'err'; fb.textContent = '✗ ' + (data.detail || 'Error al guardar.');
+        }
+      } catch {
+        fb.className = 'err'; fb.textContent = '✗ Error de conexión.';
+      }
+    });
+
+    document.getElementById('email-test-btn').addEventListener('click', async () => {
+      const fb = document.getElementById('email-feedback');
+      fb.className = ''; fb.textContent = 'Enviando correo de prueba…';
+      try {
+        const r = await fetch('/api/email/test', { method: 'POST' });
+        const data = await r.json();
+        fb.className = data.ok ? 'ok' : 'err';
+        fb.textContent = (data.ok ? '✓ ' : '✗ ') + data.detail;
+      } catch {
+        fb.className = 'err'; fb.textContent = '✗ Error de conexión.';
+      }
+    });
+  }
 
   // ── Metrics panel ─────────────────────────────────────────────────────────
 

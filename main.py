@@ -21,7 +21,7 @@ logging.basicConfig(
 TCPDUMP_ENABLED = True
 
 from alert_manager import create_alert, get_active_alerts
-from email_notifier import send_test_email
+from email_notifier import is_smtp_configured, send_test_email
 from anomaly_detector import (
     AnomalyScanner,
     generate_anomaly_alerts,
@@ -454,12 +454,76 @@ def device_features(device_id: int):
 
 @app.post("/api/email/test")
 def email_test():
-    """
-    Envía un correo de prueba para verificar la configuración SMTP.
-    Requiere que SMTP_USER, SMTP_PASSWORD y ALERT_EMAIL_TO estén definidas
-    como variables de entorno.
-    """
+    """Envía un correo de prueba. Ignora el interruptor email_enabled."""
     return send_test_email()
+
+
+_VALID_SEVERITIES = {"medium", "high", "critical"}
+_EMAIL_RE = __import__("re").compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class EmailSettingsUpdate(BaseModel):
+    email_to:           str
+    email_min_severity: str
+    email_enabled:      str
+
+
+@app.get("/api/settings/email")
+def get_email_settings():
+    """
+    Devuelve la configuración de correo guardada en settings.
+    smtp_configured indica si las env vars SMTP_USER y SMTP_PASSWORD están
+    presentes — NUNCA devuelve el valor de las credenciales.
+    """
+    conn = get_db()
+    def s(key, default):
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+        return row[0] if row else default
+
+    return {
+        "email_to":           s("email_to", ""),
+        "email_min_severity": s("email_min_severity", "high"),
+        "email_enabled":      s("email_enabled", "false"),
+        "smtp_configured":    is_smtp_configured(),
+    }
+
+
+@app.post("/api/settings/email")
+def save_email_settings(body: EmailSettingsUpdate):
+    """Guarda destinatario, nivel mínimo e interruptor de correo en settings."""
+    if body.email_min_severity not in _VALID_SEVERITIES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"email_min_severity debe ser uno de {sorted(_VALID_SEVERITIES)}",
+        )
+    if body.email_enabled not in ("true", "false"):
+        raise HTTPException(
+            status_code=422,
+            detail="email_enabled debe ser 'true' o 'false'",
+        )
+    email_to = body.email_to.strip()
+    if email_to and not _EMAIL_RE.match(email_to):
+        raise HTTPException(
+            status_code=422,
+            detail="email_to no tiene formato de correo válido",
+        )
+
+    conn = get_db()
+    now  = datetime.now(UTC).isoformat()
+    for key, val in [
+        ("email_to",           email_to),
+        ("email_min_severity", body.email_min_severity),
+        ("email_enabled",      body.email_enabled),
+    ]:
+        conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (key, val, now),
+        )
+    conn.commit()
+    return {"ok": True}
 
 
 @app.get("/api/stats")
