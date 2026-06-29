@@ -1133,7 +1133,72 @@
   }
 
   let _alertsTab = 'active';
-  let _histFilter = { device_id: '', date_from: '', date_to: '' };
+  // Filtro compartido entre todas las pestañas de alertas (excepto Notificaciones).
+  // Al cambiar de pestaña el filtro se conserva para facilitar explorar el mismo
+  // dispositivo/rango en distintas vistas sin reconfigurar.
+  let _alertsFilter = { device_id: '', date_from: '', date_to: '' };
+
+  // Lee los valores actuales de la barra de filtros del DOM y los persiste.
+  function _saveFilterState() {
+    const devSel   = document.getElementById('alert-filter-device');
+    const dateFrom = document.getElementById('alert-filter-from');
+    const dateTo   = document.getElementById('alert-filter-to');
+    if (devSel)   _alertsFilter.device_id = devSel.value;
+    if (dateFrom) _alertsFilter.date_from = dateFrom.value;
+    if (dateTo)   _alertsFilter.date_to   = dateTo.value;
+  }
+
+  // Renderiza la barra de filtros compartida e instala sus listeners.
+  // Debe llamarse después de insertar el HTML en el DOM.
+  function _attachFilterListeners() {
+    document.getElementById('alert-apply-btn')?.addEventListener('click', () => {
+      _saveFilterState();
+      renderAlerts();
+    });
+    document.getElementById('alert-clear-btn')?.addEventListener('click', () => {
+      _alertsFilter = { device_id: '', date_from: '', date_to: '' };
+      renderAlerts();
+    });
+    ['alert-filter-from', 'alert-filter-to'].forEach(id => {
+      document.getElementById(id)?.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { _saveFilterState(); renderAlerts(); }
+      });
+    });
+  }
+
+  // Construye el HTML de la barra de filtros (sin installar listeners).
+  function _filterBarHtml(count) {
+    const devOptions =
+      '<option value="">Todos los dispositivos</option>' +
+      _allDevices.map(d => {
+        const lbl = [d.ip, d.hostname].filter(Boolean).join(' / ');
+        const sel = d.id.toString() === _alertsFilter.device_id ? ' selected' : '';
+        return `<option value="${d.id}"${sel}>${escapeHtml(lbl)}</option>`;
+      }).join('');
+
+    const hasFilter = _alertsFilter.device_id || _alertsFilter.date_from || _alertsFilter.date_to;
+    const countText = `${count} alerta${count !== 1 ? 's' : ''}`;
+
+    return `<div class="history-filter-bar">
+      <div class="hist-filter-group">
+        <label for="alert-filter-device">Dispositivo</label>
+        <select id="alert-filter-device" class="hist-filter-select">${devOptions}</select>
+      </div>
+      <div class="hist-filter-group">
+        <label for="alert-filter-from">Desde</label>
+        <input type="date" id="alert-filter-from" class="hist-filter-input"
+               value="${escapeHtml(_alertsFilter.date_from)}">
+      </div>
+      <div class="hist-filter-group">
+        <label for="alert-filter-to">Hasta</label>
+        <input type="date" id="alert-filter-to" class="hist-filter-input"
+               value="${escapeHtml(_alertsFilter.date_to)}">
+      </div>
+      <button id="alert-apply-btn" class="filter-btn${hasFilter ? ' filter-on' : ''}">Aplicar</button>
+      <button id="alert-clear-btn" class="filter-btn"${hasFilter ? '' : ' style="display:none"'}>Limpiar</button>
+      <span class="hist-count">${countText}</span>
+    </div>`;
+  }
 
   async function openAlerts() {
     document.getElementById('modal-title').textContent = 'Alertas';
@@ -1212,103 +1277,59 @@
       return;
     }
 
-    const isCategoryTab = _alertsTab === 'suspicious' || _alertsTab === 'not_suspicious';
-    const isHistory     = _alertsTab === 'history';
+    // Persistir el estado del filtro antes de re-renderizar el DOM.
+    _saveFilterState();
 
-    // Guardar los valores actuales del filtro antes de limpiar el DOM
-    if (isHistory) {
-      const devSel   = document.getElementById('hist-device');
-      const dateFrom = document.getElementById('hist-date-from');
-      const dateTo   = document.getElementById('hist-date-to');
-      if (devSel)   _histFilter.device_id = devSel.value;
-      if (dateFrom) _histFilter.date_from = dateFrom.value;
-      if (dateTo)   _histFilter.date_to   = dateTo.value;
-    }
+    // ── Construir URL: criterio base de la pestaña + filtros del usuario ──────
+    const p = new URLSearchParams({ limit: '500' });
 
-    // Construir URL
-    let url;
     if (_alertsTab === 'active') {
-      url = '/api/alerts/active';
-    } else if (isHistory) {
-      const p = new URLSearchParams({ acknowledged: 'true', limit: '500' });
-      if (_histFilter.device_id) p.set('device_id', _histFilter.device_id);
-      if (_histFilter.date_from) p.set('date_from',  _histFilter.date_from);
-      if (_histFilter.date_to)   p.set('date_to',    _histFilter.date_to);
-      url = `/api/alerts?${p}`;
+      p.set('acknowledged', 'false');
+    } else if (_alertsTab === 'history') {
+      p.set('acknowledged', 'true');
     } else {
-      url = `/api/alerts?category=${_alertsTab}&limit=200`;
+      // suspicious / not_suspicious
+      p.set('category', _alertsTab);
     }
 
-    const res    = await fetch(url);
+    if (_alertsFilter.device_id) p.set('device_id', _alertsFilter.device_id);
+    if (_alertsFilter.date_from) p.set('date_from',  _alertsFilter.date_from);
+    if (_alertsFilter.date_to)   p.set('date_to',    _alertsFilter.date_to);
+
+    const res    = await fetch(`/api/alerts?${p}`);
     const alerts = await res.json();
 
-    // ── Historial con barra de filtros ───────────────────────────────────────
-    if (isHistory) {
-      const devOptions =
-        '<option value="">Todos los dispositivos</option>' +
-        _allDevices.map(d => {
-          const lbl = [d.ip, d.hostname].filter(Boolean).join(' / ');
-          const sel = d.id.toString() === _histFilter.device_id ? ' selected' : '';
-          return `<option value="${d.id}"${sel}>${escapeHtml(lbl)}</option>`;
-        }).join('');
+    // ── Barra de filtros (común a todas las pestañas) ─────────────────────────
+    const filterBar = _filterBarHtml(alerts.length);
 
-      const countText = `${alerts.length} alerta${alerts.length !== 1 ? 's' : ''}`;
+    // ── Contenido específico de cada pestaña ──────────────────────────────────
+    let content;
 
-      list.innerHTML =
-        `<div class="history-filter-bar">
-          <div class="hist-filter-group">
-            <label for="hist-device">Dispositivo</label>
-            <select id="hist-device" class="hist-filter-select">${devOptions}</select>
-          </div>
-          <div class="hist-filter-group">
-            <label for="hist-date-from">Desde</label>
-            <input type="date" id="hist-date-from" class="hist-filter-input"
-                   value="${escapeHtml(_histFilter.date_from)}">
-          </div>
-          <div class="hist-filter-group">
-            <label for="hist-date-to">Hasta</label>
-            <input type="date" id="hist-date-to" class="hist-filter-input"
-                   value="${escapeHtml(_histFilter.date_to)}">
-          </div>
-          <button id="hist-apply-btn" class="filter-btn">Aplicar</button>
-          <button id="hist-clear-btn" class="filter-btn">Limpiar</button>
-          <span class="hist-count">${countText}</span>
-        </div>` +
-        (alerts.length === 0
-          ? '<p style="color:#64748b;padding:0.5rem 0">Sin alertas con los filtros seleccionados.</p>'
-          : alerts.map(renderAlertItem).join(''));
+    if (_alertsTab === 'active') {
+      content = alerts.length === 0
+        ? '<p style="color:#64748b;padding:0.5rem 0">No hay alertas activas.</p>'
+        : alerts.map(renderAlertItem).join('');
 
-      document.getElementById('hist-apply-btn').addEventListener('click', renderAlerts);
-      document.getElementById('hist-clear-btn').addEventListener('click', () => {
-        _histFilter = { device_id: '', date_from: '', date_to: '' };
-        renderAlerts();
-      });
-      // Aplicar también al presionar Enter en los campos de fecha
-      ['hist-date-from', 'hist-date-to'].forEach(id => {
-        document.getElementById(id)?.addEventListener('keydown', e => {
-          if (e.key === 'Enter') renderAlerts();
-        });
-      });
+    } else if (_alertsTab === 'history') {
+      content = alerts.length === 0
+        ? '<p style="color:#64748b;padding:0.5rem 0">Sin alertas con los filtros seleccionados.</p>'
+        : alerts.map(renderAlertItem).join('');
 
-    // ── Pestañas de categoría ─────────────────────────────────────────────────
-    } else if (isCategoryTab) {
+    } else {
+      // suspicious / not_suspicious — sub-grupos Activas / Vistas
       if (alerts.length === 0) {
-        list.innerHTML = '<p style="color:#64748b;padding:1rem">No hay alertas en esta categoría.</p>';
+        content = '<p style="color:#64748b;padding:0.5rem 0">No hay alertas en esta categoría.</p>';
       } else {
         const unacked = alerts.filter(a => !(a.acknowledged === 1 || a.acknowledged === true));
         const acked   = alerts.filter(a =>   a.acknowledged === 1 || a.acknowledged === true);
-        let html = '';
-        if (unacked.length > 0) html += '<p class="alert-group-title">Activas</p>' + unacked.map(renderAlertItem).join('');
-        if (acked.length > 0)   html += '<p class="alert-group-title">Vistas</p>'  + acked.map(renderAlertItem).join('');
-        list.innerHTML = html;
+        content = '';
+        if (unacked.length > 0) content += '<p class="alert-group-title">Activas</p>' + unacked.map(renderAlertItem).join('');
+        if (acked.length   > 0) content += '<p class="alert-group-title">Vistas</p>'  + acked.map(renderAlertItem).join('');
       }
-
-    // ── Pestaña activas ───────────────────────────────────────────────────────
-    } else {
-      list.innerHTML = alerts.length === 0
-        ? '<p style="color:#64748b;padding:1rem">No hay alertas activas.</p>'
-        : alerts.map(renderAlertItem).join('');
     }
+
+    list.innerHTML = filterBar + content;
+    _attachFilterListeners();
 
     // Listeners compartidos para todos los tabs
     list.querySelectorAll('button[data-ack]').forEach(btn => {
